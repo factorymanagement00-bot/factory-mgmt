@@ -141,13 +141,15 @@ def inventory_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("📦 Inventory")
 
+    # ------------------- CATEGORY MANAGEMENT -------------------
     st.markdown("### ➕ Manage Categories")
 
     colA, colB = st.columns(2)
 
-    # 1️⃣ ADD NEW CATEGORY
+    # 1️⃣ Add new category
     with colA:
         new_cat = st.text_input("Add New Category")
+
         if st.button("Add Category"):
             if new_cat.strip():
                 if new_cat not in st.session_state.categories:
@@ -159,15 +161,17 @@ def inventory_ui():
             else:
                 st.error("Category cannot be empty.")
 
-    # 2️⃣ SELECT CATEGORY FOR NEW ITEMS
+    # 2️⃣ Select category for item
     with colB:
         if st.session_state.categories:
-            selected_category = st.selectbox("Select Category for Inventory Item", st.session_state.categories)
+            selected_category = st.selectbox("Select Category for Item", st.session_state.categories)
         else:
             selected_category = None
             st.info("No categories added yet.")
 
     st.markdown("---")
+
+    # --------------------- ADD INVENTORY ITEM ---------------------
     st.subheader("➕ Add Inventory Item")
 
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -194,7 +198,7 @@ def inventory_ui():
                 "Category": category,
                 "Weight (kg)": weight,
                 "Quantity": qty,
-                "Size": size if size.strip() else "N/A"
+                "Size": size if size.strip() else "N/A",
             })
             st.success("Item added successfully!")
             st.rerun()
@@ -202,22 +206,54 @@ def inventory_ui():
             st.error("Item name cannot be empty.")
 
     st.markdown("---")
-    st.subheader("📋 Inventory List (Filterable)")
+
+    # --------------------- INVENTORY TABLE + FILTER ---------------------
+    st.subheader("📋 Inventory List (Filterable & Deletable)")
 
     if len(st.session_state.inventory) == 0:
         st.info("No inventory items added yet.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
+    # Filter dropdown
     filter_opts = ["All"] + st.session_state.categories
     filter_choice = st.selectbox("Filter by Category", filter_opts)
 
+    # Apply filter
     if filter_choice == "All":
-        filtered = st.session_state.inventory
+        filtered_items = st.session_state.inventory
     else:
-        filtered = [item for item in st.session_state.inventory if item["Category"] == filter_choice]
+        filtered_items = [
+            item for item in st.session_state.inventory 
+            if item["Category"] == filter_choice
+        ]
 
-    st.table(filtered)
+    # Show filtered items table
+    st.table(filtered_items)
+
+    st.markdown("### 🗑 Delete Inventory Items")
+
+    # --------------------- DELETE ITEMS ---------------------
+    for index, item in enumerate(filtered_items):
+
+        # Expander for each inventory item
+        with st.expander(f"{item['Item']}  —  {item['Category']}"):
+            st.write(f"**Weight:** {item['Weight (kg)']} kg")
+            st.write(f"**Quantity:** {item['Quantity']}")
+            st.write(f"**Size:** {item['Size']}")
+
+            # Delete button
+            if st.button(f"Delete '{item['Item']}'", key=f"del_inv_{index}"):
+
+                # Find actual index in full inventory list
+                real_index = st.session_state.inventory.index(item)
+
+                # Delete item
+                st.session_state.inventory.pop(real_index)
+
+                st.success("Item deleted successfully!")
+                st.rerun()
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 
