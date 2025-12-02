@@ -107,10 +107,10 @@ def init_state():
 # -----------------------------------------------------
 def plan_today(jobs, staff_count, hours_per_staff):
     total_capacity = staff_count * hours_per_staff
-    used = 0
+    used = 0.0
     tasks = []
 
-    # Sort by due date
+    # Sort jobs by due date
     sorted_jobs = sorted(jobs, key=lambda j: j["due"])
 
     for job in sorted_jobs:
@@ -140,10 +140,22 @@ def staff_ui():
     col1, col2 = st.columns(2)
 
     with col1:
-        count = st.number_input("Number of Staff", 1, 500, st.session_state.staff["count"])
+        count = st.number_input(
+            "Number of Staff",
+            min_value=1,
+            max_value=500,
+            value=st.session_state.staff["count"],
+            step=1
+        )
 
     with col2:
-        hours = st.number_input("Hours per Staff per Day", 1.0, 24.0, st.session_state.staff["hours"], step=0.5)
+        hours = st.number_input(
+            "Hours per Staff per Day",
+            min_value=1.0,
+            max_value=24.0,
+            value=st.session_state.staff["hours"],
+            step=0.5
+        )
 
     st.session_state.staff["count"] = int(count)
     st.session_state.staff["hours"] = float(hours)
@@ -167,10 +179,10 @@ def inventory_ui():
         name = st.text_input("Item Name")
 
     with col2:
-        weight = st.number_input("Weight (kg)", 0.0, 100000.0, 0.0, step=0.1)
+        weight = st.number_input("Weight (kg)", min_value=0.0, max_value=100000.0, value=0.0, step=0.1)
 
     with col3:
-        qty = st.number_input("Quantity", 0, 100000, 0)
+        qty = st.number_input("Quantity", min_value=0, max_value=100000, value=0, step=1)
 
     with col4:
         size = st.text_input("Size (e.g. 10x20 cm)")
@@ -205,26 +217,31 @@ def jobs_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("🧾 Jobs & Processes")
 
+    # Show existing jobs in expandable cards
     if st.session_state.jobs:
-        st.table([
-            {"Job": j["name"], "Due Date": j["due"].isoformat(), "Processes": len(j["processes"])}
-            for j in st.session_state.jobs
-        ])
+        st.markdown("### 📋 Existing Jobs")
+        for idx, job in enumerate(st.session_state.jobs):
+            with st.expander(f"📦 {job['name']} — Due: {job['due'].isoformat()}"):
+                st.write(f"**Quantity:** {job['qty']} units")
+                st.write("### 🛠 Processes:")
+                for p in job["processes"]:
+                    st.write(f"- **{p['name']}** — {p['hours']} hrs")
     else:
         st.info("No jobs added yet.")
 
+    st.markdown("---")
     st.markdown("### ➕ Add Job")
 
     col1, col2 = st.columns(2)
 
     with col1:
         job_name = st.text_input("Job Name")
-        qty = st.number_input("Quantity", 1, 100000, 100)
+        qty = st.number_input("Quantity", min_value=1, max_value=100000, value=100, step=1)
 
     with col2:
         due_date = st.date_input("Due Date", date.today())
 
-    num_processes = st.slider("Number of Processes", 1, 20, 5)
+    num_processes = st.slider("Number of Processes", min_value=1, max_value=20, value=5, step=1)
 
     st.markdown("### 📝 Process Details")
     process_list = []
@@ -245,7 +262,7 @@ def jobs_ui():
                 key=f"phours_{i}"
             )
 
-        process_list.append({"name": p_name, "hours": p_hours})
+        process_list.append({"name": p_name, "hours": float(p_hours)})
 
     if st.button("Add Job"):
         if not job_name.strip():
@@ -255,11 +272,11 @@ def jobs_ui():
         else:
             st.session_state.jobs.append({
                 "name": job_name,
-                "qty": qty,
+                "qty": int(qty),
                 "due": due_date,
                 "processes": process_list
             })
-            st.success("Job added!")
+            st.success("Job added successfully!")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -272,17 +289,20 @@ def planner_ui():
     st.subheader("📅 AI Workload Planner")
 
     if st.button("Generate Today's Plan"):
-        tasks, used, total = plan_today(
-            st.session_state.jobs,
-            st.session_state.staff["count"],
-            st.session_state.staff["hours"]
-        )
-
-        if not tasks:
-            st.warning("No tasks scheduled today.")
+        if not st.session_state.jobs:
+            st.warning("No jobs available to plan.")
         else:
-            st.success(f"Planned {len(tasks)} tasks • Used {used}/{total} hours")
-            st.table(tasks)
+            tasks, used, total = plan_today(
+                st.session_state.jobs,
+                st.session_state.staff["count"],
+                st.session_state.staff["hours"]
+            )
+
+            if not tasks:
+                st.warning("No tasks scheduled today (maybe capacity too low).")
+            else:
+                st.success(f"Planned {len(tasks)} tasks • Used {used}/{total} hours")
+                st.table(tasks)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -311,4 +331,5 @@ def main():
         planner_ui()
 
 
-main()
+if __name__ == "__main__":
+    main()
