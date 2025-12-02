@@ -218,6 +218,7 @@ def jobs_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("🧾 Jobs & Processes")
 
+    # Show existing jobs
     if st.session_state.jobs:
         st.table([
             {"Job": j["name"], "Due": j["due"].isoformat(), "Processes": len(j["processes"])}
@@ -231,49 +232,54 @@ def jobs_ui():
     col1, col2 = st.columns(2)
 
     with col1:
-        name = st.text_input("Job Name")
-        qty = st.number_input("Quantity", 1, 100000, 100)
+        job_name = st.text_input("Job Name")
+        quantity = st.number_input("Quantity", min_value=1, max_value=100000, value=100)
 
     with col2:
-        due = st.date_input("Due Date", date.today())
+        due_date = st.date_input("Due Date", date.today())
 
-    process_count = st.slider("Number of Processes", 1, 10, 5)
-    hrs = st.slider("Hours per Process", 1.0, 6.0, 3.0)
+    # Select number of processes
+    num_processes = st.slider("Number of Processes", 1, 20, 5)
+
+    st.markdown("### 📝 Process Names & Hours")
+
+    process_list = []
+
+    # Create input boxes for each process
+    for i in range(num_processes):
+        colA, colB = st.columns([3, 1.2])
+
+        with colA:
+            p_name = st.text_input(f"Process {i+1} Name", key=f"pname_{i}")
+
+        with colB:
+            p_hours = st.number_input(
+                f"Hours",
+                min_value=0.5,
+                max_value=24.0,
+                value=3.0,
+                step=0.5,
+                key=f"phours_{i}"
+            )
+
+        process_list.append({"name": p_name, "hours": p_hours})
 
     if st.button("Add Job"):
-        if name:
-            st.session_state.jobs.append({
-                "name": name,
-                "qty": qty,
-                "due": due,
-                "processes": [{"name": f"Process {i+1}", "hours": hrs} for i in range(process_count)]
-            })
-            st.success("Job added!")
+        if not job_name.strip():
+            st.error("Job name cannot be empty.")
         else:
-            st.error("Job name required.")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-# -----------------------------------------------------
-# PLANNER UI
-# -----------------------------------------------------
-def planner_ui():
-    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-    st.subheader("📅 AI Workload Planner")
-
-    if st.button("Generate Today's Plan"):
-        tasks, used, total = plan_today(
-            st.session_state.jobs,
-            st.session_state.staff["count"],
-            st.session_state.staff["hours"]
-        )
-
-        if not tasks:
-            st.warning("No tasks scheduled for today.")
-        else:
-            st.success(f"Planned {len(tasks)} tasks • Used {used}/{total} hours")
-            st.table(tasks)
+            # Validate process names
+            missing = [p for p in process_list if not p["name"].strip()]
+            if missing:
+                st.error("Please enter all process names.")
+            else:
+                st.session_state.jobs.append({
+                    "name": job_name,
+                    "qty": quantity,
+                    "due": due_date,
+                    "processes": process_list
+                })
+                st.success("Job added successfully!")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
