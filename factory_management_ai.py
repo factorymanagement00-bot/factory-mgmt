@@ -1,37 +1,37 @@
+import os
+import json
+from datetime import datetime, timedelta, date
+
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta, date
-import json
-import os
-
-from dotenv import load_dotenv
 from openai import OpenAI
 
-# Load API Key
-load_dotenv()
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-client = None
-if OPENAI_KEY:
-    client = OpenAI(api_key=OPENAI_KEY)
+# ============================================================
+# CONFIG
+# ============================================================
+st.set_page_config(page_title="Factory Management AI", layout="wide")
 
 # ============================================================
-# PAGE CONFIG
+# OPENAI CLIENT (USING st.secrets, NO dotenv)
 # ============================================================
-st.set_page_config(page_title="Factory AI", layout="wide")
+OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", None)
+client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
+
 
 # ============================================================
-# SESSION STATE
+# SESSION STATE INIT
 # ============================================================
 if "inventory" not in st.session_state:
-    st.session_state.inventory = []
+    st.session_state.inventory = []  # list[dict]
 
 if "categories" not in st.session_state:
-    st.session_state.categories = []
+    st.session_state.categories = []  # list[str]
 
 if "jobs" not in st.session_state:
-    st.session_state.jobs = []
+    st.session_state.jobs = []  # list[dict]
 
 if "task_done" not in st.session_state:
+    # key: "jobIndex_processIndex" -> bool
     st.session_state.task_done = {}
 
 if "staff_count" not in st.session_state:
@@ -42,11 +42,15 @@ if "work_hours" not in st.session_state:
 
 
 # ============================================================
-# AI PLANNER FUNCTION (ChatGPT)
+# AI PLANNER (GPT)
 # ============================================================
 def call_ai_planner(jobs, inventory, staff_count, work_hours):
+    """
+    Sends jobs + inventory to GPT and asks it to return a JSON schedule.
+    Returns (tasks, error_message)
+    """
     if client is None:
-        return None, "❌ No API key found! Add it in .env as OPENAI_API_KEY=..."
+        return None, "No OPENAI_API_KEY configured in Streamlit secrets."
 
     payload = {
         "jobs": jobs,
@@ -55,56 +59,69 @@ def call_ai_planner(jobs, inventory, staff_count, work_hours):
         "work_hours": work_hours,
     }
 
-    SYSTEM_PROMPT = """
-    You are an AI factory production planner.
+    system_msg = """
+You are an AI factory scheduler for a cardboard box manufacturing plant.
 
-    RULES YOU MUST FOLLOW:
-    - Prioritize closest due dates.
-    - Prefer batching same processes to save electricity.
-    - Respect working hours 09:00–17:00 (13:00–14:00 lunch break).
-    - Do NOT invent any jobs or processes.
-    - Do NOT exceed 17:00 end time.
-    - Always output STRICT JSON in this format:
-      {
-        "tasks": [
-          {
-            "job": "...",
-            "process": "...",
-            "machine": "...",
-            "workers": 3,
-            "start": "HH:MM",
-            "end": "HH:MM"
-          }
-        ]
-      }
+Rules:
+- Prioritize jobs with earlier due dates.
+- Try to batch the same processes or same machine operations together
+  (e.g. conversion, lamination) to save machine setup time & electricity.
+- Workday: 09:00–17:00 with lunch break 13:00–14:00.
+- Do not invent new jobs or processes; only use given data.
+- Respect total work hours; do not schedule beyond 17:00.
+- If material seems clearly impossible (e.g. no inventory), you can skip that job.
+
+Output:
+Return ONLY valid JSON, with this structure:
+{
+  "tasks": [
+    {
+      "job": "Tiger",
+      "process": "conversion",
+      "machine": "lamination line 1",
+      "workers": 3,
+      "start": "09:00",
+      "end": "10:30",
+      "note": "optional explanation"
+    }
+  ]
+}
     """
 
-    USER_PROMPT = f"""
-    Use this data to generate today's optimized plan. Return ONLY JSON.
-    {json.dumps(payload)}
-    """
+    user_msg = (
+        "Here is the factory data for today as JSON. "
+        "Generate a schedule for TODAY only. "
+        "Return ONLY JSON in the format described.\n\n"
+        + json.dumps(payload)
+    )
 
     try:
-        response = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": USER_PROMPT},
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
             ],
             response_format={"type": "json_object"},
         )
-
-        data = json.loads(response.choices[0].message.content)
+        content = resp.choices[0].message.content
+        data = json.loads(content)
         return data.get("tasks", []), None
-
     except Exception as e:
-        return None, str(e)
+        return None, f"AI Planner error: {e}"
 
 
 # ============================================================
-# SMART MANUAL SCHEDULER (Your Old Logic)
+# SIMPLE RULE-BASED SMART PLANNER (NO AI)
 # ============================================================
 def smart_batch_schedule(jobs, done_map):
+    """
+    Your local smart planner:
+    - Sorts jobs by due date
+    - Batches same process names for close-due jobs
+    - Handles lunch break
+    - Skips processes marked done
+    """
     start_dt = datetime.strptime("09:00", "%H:%M")
     lunch_start = datetime.strptime("13:00", "%H:%M")
     lunch_end = datetime.strptime("14:00", "%H:%M")
@@ -112,8 +129,15 @@ def smart_batch_schedule(jobs, done_map):
     today = date.today()
     tasks = []
 
+    # Flatten job processes
     for j_idx, job in enumerate(jobs):
-        due = datetime.strptime(job["due"], "%Y-%m-%d").date()
+        try:
+            due = datetime.strptime(job["due"], "%Y-%m-%d").date()
+        except Exception:
+            if isinstance(job["due"], date):
+                due = job["due"]
+            else:
+                due = today
 
         for p_idx, p in enumerate(job["processes"]):
             tid = f"{j_idx}_{p_idx}"
@@ -128,29 +152,30 @@ def smart_batch_schedule(jobs, done_map):
                 "process": p["name"],
                 "hours": float(p["hours"]),
                 "workers": int(p["workers"]),
-                "machine": p["machine"],
+                "machine": p.get("machine", ""),
             })
 
     if not tasks:
         return []
 
-    tasks.sort(key=lambda x: x["due"])
+    # Sort by due date
+    tasks.sort(key=lambda t: t["due"])
+
     timeline = []
-    cur_time = start_dt
+    current = start_dt
     used = set()
 
     for i, base in enumerate(tasks):
-
         if base["task_id"] in used:
             continue
 
-        # Base scheduling
-        start = cur_time
+        # schedule base
+        start = current
         end = start + timedelta(hours=base["hours"])
         if start < lunch_start < end:
             end += (lunch_end - lunch_start)
 
-        # Due Status
+        # due status
         if base["due"] < today:
             due_status = "OVERDUE"
         elif base["due"] <= today + timedelta(days=1):
@@ -172,19 +197,19 @@ def smart_batch_schedule(jobs, done_map):
         })
 
         used.add(base["task_id"])
-        cur_time = end
+        current = end
 
-        # Batch Same Process
+        # batch same process w/ close due date
         for j in range(i + 1, len(tasks)):
             t = tasks[j]
             if t["task_id"] in used:
                 continue
-            if t["process"].lower() != base["process"].lower():
+            if t["process"].strip().lower() != base["process"].strip().lower():
                 continue
             if abs((t["due"] - base["due"]).days) > 2:
                 continue
 
-            start2 = cur_time
+            start2 = current
             end2 = start2 + timedelta(hours=t["hours"])
             if start2 < lunch_start < end2:
                 end2 += (lunch_end - lunch_start)
@@ -210,7 +235,7 @@ def smart_batch_schedule(jobs, done_map):
             })
 
             used.add(t["task_id"])
-            cur_time = end2
+            current = end2
 
     return timeline
 
@@ -222,167 +247,284 @@ def inventory_page():
     st.title("📦 Inventory")
 
     with st.expander("Add Category"):
-        cat = st.text_input("Category Name")
-        if st.button("Add Category"):
-            if cat.strip() and cat not in st.session_state.categories:
-                st.session_state.categories.append(cat)
+        new_cat = st.text_input("Category name")
+        if st.button("Save Category"):
+            if new_cat.strip() and new_cat not in st.session_state.categories:
+                st.session_state.categories.append(new_cat.strip())
+                st.success("Category added.")
+            else:
+                st.warning("Invalid or duplicate category.")
 
-    st.subheader("Add Item")
-    name = st.text_input("Item Name")
+    st.subheader("Add Inventory Item")
+    name = st.text_input("Item name")
     cat = st.selectbox("Category", ["None"] + st.session_state.categories)
     qty = st.number_input("Quantity", min_value=0, value=1)
-    size = st.text_input("Size")
-    weight = st.number_input("Weight (kg)", min_value=0.0)
+    size = st.text_input("Size (e.g. 32 or 50x70)")
+    weight = st.number_input("Weight (kg)", min_value=0.0, value=0.0)
 
     if st.button("Add Item"):
-        st.session_state.inventory.append({
-            "name": name,
-            "category": cat if cat != "None" else "",
-            "quantity": qty,
-            "size": size,
-            "weight": weight,
-        })
+        if not name.strip():
+            st.warning("Item name required.")
+        else:
+            st.session_state.inventory.append({
+                "name": name.strip(),
+                "category": cat if cat != "None" else "",
+                "quantity": qty,
+                "size": size,
+                "weight": weight,
+            })
+            st.success("Item added.")
 
+    st.markdown("---")
     st.subheader("Inventory List")
-    for idx, item in enumerate(st.session_state.inventory):
-        col1, col2, col3, col4, col5 = st.columns([2,2,2,2,1])
-        col1.write(item["name"])
-        col2.write(item["category"])
-        col3.write(f"Qty: {item['quantity']}")
-        col4.write(f"Size: {item['size']}")
-        if col5.button("❌", key=f"del{idx}"):
-            st.session_state.inventory.pop(idx)
-            st.experimental_rerun()
+
+    if not st.session_state.inventory:
+        st.info("No items yet.")
+    else:
+        for i, item in enumerate(st.session_state.inventory):
+            col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
+            col1.write(f"**{item['name']}**")
+            col2.write(item["category"] or "—")
+            col3.write(f"Qty: {item['quantity']}")
+            col4.write(f"Size: {item['size']}")
+            if col5.button("🗑️", key=f"inv_del_{i}"):
+                st.session_state.inventory.pop(i)
+                st.experimental_rerun()
 
 
 # ============================================================
 # JOBS PAGE
 # ============================================================
 def jobs_page():
-    st.title("📝 Jobs")
+    st.title("🧾 Jobs")
 
-    name = st.text_input("Job Name")
-    due = st.date_input("Due Date")
-    n = st.slider("Number of Processes", 1, 20, 1)
+    job_name = st.text_input("Job name")
+    due_date = st.date_input("Due date")
 
+    num_proc = st.slider("Number of processes", 1, 20, 1)
     processes = []
 
-    for i in range(n):
+    for i in range(num_proc):
         st.markdown(f"### Process {i+1}")
 
-        pname = st.text_input(f"Process name {i+1}", key=f"pn{i}")
-        hrs = st.number_input(f"Hours", min_value=0.5, value=1.0, key=f"ph{i}")
-        workers = st.number_input(f"Workers", min_value=1, value=1, key=f"pw{i}")
-        machine = st.text_input(f"Machine", key=f"pm{i}")
+        pname = st.text_input(f"Process name {i+1}", key=f"pname_{i}")
+        hours = st.number_input(f"Hours for process {i+1}", min_value=0.5, step=0.5, value=1.0, key=f"phours_{i}")
+        workers = st.number_input(f"Workers for process {i+1}", min_value=1, value=1, key=f"pworkers_{i}")
+        machine = st.text_input(f"Machine (optional) {i+1}", key=f"pmachine_{i}")
 
-        cat = st.selectbox(f"Category", ["None"] + st.session_state.categories, key=f"pc{i}")
+        cat = st.selectbox(
+            f"Category (optional) {i+1}",
+            ["None"] + st.session_state.categories,
+            key=f"pcat_{i}"
+        )
 
-        inv_item = None
+        item = None
         size = None
-
         if cat != "None":
             items = ["None"] + [inv["name"] for inv in st.session_state.inventory if inv["category"] == cat]
-            inv_sel = st.selectbox("Inventory Item", items, key=f"pit{i}")
-            if inv_sel != "None": inv_item = inv_sel
+            item_sel = st.selectbox(f"Inventory item {i+1}", items, key=f"pitem_{i}")
+            if item_sel != "None":
+                item = item_sel
 
             sizes = ["None"] + [inv["size"] for inv in st.session_state.inventory if inv["category"] == cat]
-            size_sel = st.selectbox("Size", sizes, key=f"psz{i}")
-            if size_sel != "None": size = size_sel
+            size_sel = st.selectbox(f"Size {i+1}", sizes, key=f"psize_{i}")
+            if size_sel != "None":
+                size = size_sel
 
         processes.append({
             "name": pname,
-            "hours": float(hrs),
-            "workers": int(workers),
+            "hours": hours,
+            "workers": workers,
             "machine": machine,
             "category": cat if cat != "None" else None,
-            "item": inv_item,
+            "item": item,
             "size": size,
         })
 
-        st.write("---")
+        st.markdown("---")
 
     if st.button("Save Job"):
-        st.session_state.jobs.append({
-            "job": name,
-            "due": due.isoformat(),
-            "processes": processes
-        })
-        st.success("Job Saved")
-        st.session_state.task_done = {}  # Reset
+        if not job_name.strip():
+            st.warning("Job name required.")
+        else:
+            st.session_state.jobs.append({
+                "job": job_name.strip(),
+                "due": due_date.isoformat(),
+                "processes": processes,
+            })
+            st.session_state.task_done = {}  # reset done status
+            st.success("Job saved.")
+
+    st.markdown("## Existing Jobs")
+    if not st.session_state.jobs:
+        st.info("No jobs saved yet.")
+    else:
+        for j_idx, job in enumerate(st.session_state.jobs):
+            with st.expander(f"{job['job']} (Due {job['due']})"):
+                for p in job["processes"]:
+                    st.write(
+                        f"- {p['name']} — {p['hours']} hrs, "
+                        f"workers: {p['workers']}, machine: {p['machine'] or '—'}"
+                    )
 
 
 # ============================================================
 # PLANNER PAGE
 # ============================================================
 def planner_page():
-    st.title("🧠 AI Planner")
+    st.title("🧠 Planner")
 
     if not st.session_state.jobs:
-        st.info("No jobs yet.")
+        st.info("No jobs to plan yet.")
         return
 
-    st.subheader("🔮 Generate AI Plan (ChatGPT)")
+    # ---------- AI Planner Section ----------
+    st.subheader("🤖 AI Planner (ChatGPT)")
 
-    if st.button("Ask AI to Plan My Day"):
-        tasks, error = call_ai_planner(
+    if st.button("Ask AI to create today's plan"):
+        tasks, err = call_ai_planner(
             st.session_state.jobs,
             st.session_state.inventory,
             st.session_state.staff_count,
             st.session_state.work_hours,
         )
-
-        if error:
-            st.error(error)
+        if err:
+            st.error(err)
         else:
-            st.success("AI Plan Generated!")
-            df = pd.DataFrame(tasks)
-            st.dataframe(df, use_container_width=True)
+            if not tasks:
+                st.warning("AI returned an empty plan.")
+            else:
+                df_ai = pd.DataFrame(tasks)
+                st.success("AI plan generated.")
+                st.dataframe(df_ai, use_container_width=True)
 
     st.markdown("---")
 
-    st.subheader("⚙ Manual Smart Planner (No AI, your old logic)")
+    # ---------- Local Smart Planner ----------
+    st.subheader("⚙ Local Smart Planner (batching)")
 
-    sched = smart_batch_schedule(st.session_state.jobs, st.session_state.task_done)
+    schedule = smart_batch_schedule(st.session_state.jobs, st.session_state.task_done)
 
-    if not sched:
-        st.success("All processes done.")
+    if not schedule:
+        st.success("All processes are marked as done.")
         return
 
-    df = pd.DataFrame(sched)
-    st.dataframe(df, use_container_width=True)
+    df = pd.DataFrame(schedule)
+    st.dataframe(df.drop(columns=["task_id"]), use_container_width=True)
 
-    st.subheader("Mark Done:")
+    st.markdown("### ✅ Mark processes as Done / Remaining")
 
-    for row in sched:
+    for row in schedule:
         tid = row["task_id"]
-        col1, col2 = st.columns([3,1])
-        col1.write(f"{row['Job']} | {row['Process']} | {row['Start']}-{row['End']}")
-        done = st.checkbox("Done", value=st.session_state.task_done.get(tid, False), key=f"done{tid}")
-        st.session_state.task_done[tid] = done
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.write(
+                f"**{row['Job']}** | {row['Process']} | "
+                f"{row['Start']}-{row['End']} | Due: {row['Due Date']} ({row['Due Status']})"
+            )
+        with col2:
+            done_flag = st.checkbox(
+                "Done",
+                value=st.session_state.task_done.get(tid, False),
+                key=f"done_{tid}",
+            )
+            st.session_state.task_done[tid] = done_flag
+
+    st.info("Refresh / rerun to rebuild schedule using remaining (not done) processes.")
 
 
 # ============================================================
-# STAFF SETTINGS
+# AI CHAT PAGE
+# ============================================================
+def ai_chat_page():
+    st.title("💬 Factory AI Chat")
+
+    if client is None:
+        st.error("No OPENAI_API_KEY set in Streamlit secrets. Chat is disabled.")
+        return
+
+    st.write("Ask anything about your jobs, inventory, planning, etc.")
+
+    user_msg = st.text_area("Your message to the AI", height=120)
+
+    if st.button("Ask AI"):
+        if not user_msg.strip():
+            st.warning("Type a question first.")
+            return
+
+        context = {
+            "jobs": st.session_state.jobs,
+            "inventory": st.session_state.inventory,
+            "staff_count": st.session_state.staff_count,
+            "work_hours": st.session_state.work_hours,
+        }
+
+        system_msg = """
+You are a helpful assistant for a factory management system.
+You see the current jobs, inventory and staff info and answer questions clearly.
+If user asks for suggestions, give practical planning advice.
+Do not invent fake jobs; talk only about the provided data.
+"""
+
+        user_full = (
+            "FACTORY DATA (JSON):\n"
+            + json.dumps(context)
+            + "\n\nUSER QUESTION:\n"
+            + user_msg
+        )
+
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_full},
+                ],
+            )
+            answer = resp.choices[0].message.content
+            st.markdown("### 🤖 AI Answer")
+            st.write(answer)
+        except Exception as e:
+            st.error(f"AI error: {e}")
+
+
+# ============================================================
+# STAFF PAGE
 # ============================================================
 def staff_page():
-    st.title("👷 Staff Settings")
+    st.title("👷 Staff & Workday Settings")
 
-    st.session_state.staff_count = st.number_input("Total Staff", min_value=1, value=st.session_state.staff_count)
-    st.session_state.work_hours = st.number_input("Work Hours", min_value=1, value=st.session_state.work_hours)
+    st.session_state.staff_count = st.number_input(
+        "Total staff (info used by AI planner)", min_value=1, value=st.session_state.staff_count
+    )
+    st.session_state.work_hours = st.number_input(
+        "Work hours per staff per day", min_value=1, value=st.session_state.work_hours
+    )
 
-    st.success("Saved!")
+    st.success("Settings saved.")
 
 
 # ============================================================
-# ROUTER
+# MAIN ROUTER
 # ============================================================
-page = st.sidebar.radio("Pages", ["Inventory", "Jobs", "Planner", "Staff"])
+def main():
+    page = st.sidebar.radio(
+        "Navigate",
+        ["Inventory", "Jobs", "Planner", "AI Chat", "Staff"],
+        index=0
+    )
 
-if page == "Inventory":
-    inventory_page()
-elif page == "Jobs":
-    jobs_page()
-elif page == "Planner":
-    planner_page()
-elif page == "Staff":
-    staff_page()
+    if page == "Inventory":
+        inventory_page()
+    elif page == "Jobs":
+        jobs_page()
+    elif page == "Planner":
+        planner_page()
+    elif page == "AI Chat":
+        ai_chat_page()
+    elif page == "Staff":
+        staff_page()
+
+
+if __name__ == "__main__":
+    main()
