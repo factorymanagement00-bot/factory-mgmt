@@ -217,15 +217,36 @@ def jobs_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("🧾 Jobs & Processes")
 
-    # Show existing jobs in expandable cards
+    # ------------------------------
+    # SHOW EXISTING JOBS (DETAILED)
+    # ------------------------------
     if st.session_state.jobs:
         st.markdown("### 📋 Existing Jobs")
+
+        # Loop through jobs with index
         for idx, job in enumerate(st.session_state.jobs):
+
             with st.expander(f"📦 {job['name']} — Due: {job['due'].isoformat()}"):
+
                 st.write(f"**Quantity:** {job['qty']} units")
                 st.write("### 🛠 Processes:")
+
                 for p in job["processes"]:
                     st.write(f"- **{p['name']}** — {p['hours']} hrs")
+
+                st.markdown("---")
+
+                # DELETE BUTTON
+                delete_button = st.button(
+                    f"🗑 Delete Job '{job['name']}'",
+                    key=f"delete_job_{idx}"
+                )
+
+                if delete_button:
+                    st.session_state.jobs.pop(idx)
+                    st.success(f"Deleted job: {job['name']}")
+                    st.experimental_rerun()
+
     else:
         st.info("No jobs added yet.")
 
@@ -241,7 +262,7 @@ def jobs_ui():
     with col2:
         due_date = st.date_input("Due Date", date.today())
 
-    num_processes = st.slider("Number of Processes", min_value=1, max_value=20, value=5, step=1)
+    num_processes = st.slider("Number of Processes", min_value=1, max_value=20, value=5)
 
     st.markdown("### 📝 Process Details")
     process_list = []
@@ -264,6 +285,7 @@ def jobs_ui():
 
         process_list.append({"name": p_name, "hours": float(p_hours)})
 
+    # Add job
     if st.button("Add Job"):
         if not job_name.strip():
             st.error("Job name is required.")
@@ -279,6 +301,7 @@ def jobs_ui():
             st.success("Job added successfully!")
 
     st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 # -----------------------------------------------------
