@@ -144,47 +144,29 @@ def staff_ui():
 # -----------------------------------------------------
 # INVENTORY UI
 # -----------------------------------------------------
-def inventory_ui():
-    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-    st.subheader("📦 Inventory")
-
-    st.markdown("### ➕ Add Inventory Item")
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-
-    with col1:
-        name = st.text_input("Item Name")
-
-    with col2:
-        category = st.text_input("Category (Type anything)")
-
-    with col3:
-        weight = st.number_input("Weight (kg)", 0.0, 100000.0, 0.0, step=0.1)
-
-    with col4:
-        qty = st.number_input("Quantity", 0, 100000, 0)
-
-    with col5:
-        size = st.text_input("Size (e.g. 10x20 cm)")
-
-    if st.button("Add Inventory Item"):
-        if name.strip():
-            st.session_state.inventory.append({
-                "Item": name,
-                "Category": category if category.strip() else "N/A",
-                "Weight (kg)": weight,
-                "Quantity": qty,
-                "Size": size if size.strip() else "N/A"
-            })
-            st.success("Item added!")
-        else:
-            st.error("Item name cannot be blank.")
-
     st.markdown("---")
     st.subheader("📋 Inventory List (Sortable)")
 
     if st.session_state.inventory:
-        st.table(st.session_state.inventory)
+
+        # 🔍 Collect all categories from inventory dynamically
+        categories = sorted(list(set(item["Category"] for item in st.session_state.inventory)))
+
+        # Add option to show all categories
+        categories.insert(0, "All")
+
+        # User selects a category filter
+        selected_category = st.selectbox("Filter by Category", categories)
+
+        # Apply filter
+        if selected_category == "All":
+            filtered_items = st.session_state.inventory
+        else:
+            filtered_items = [item for item in st.session_state.inventory if item["Category"] == selected_category]
+
+        # Show filtered table
+        st.table(filtered_items)
+
     else:
         st.info("No inventory items added yet.")
 
