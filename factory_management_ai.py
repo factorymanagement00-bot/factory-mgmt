@@ -1,6 +1,7 @@
 import streamlit as st
 from datetime import date
 
+
 # -----------------------------------------------------
 # PAGE CONFIG
 # -----------------------------------------------------
@@ -9,6 +10,7 @@ st.set_page_config(
     page_icon="🏭",
     layout="wide",
 )
+
 
 # -----------------------------------------------------
 # CUSTOM PREMIUM UI (GLASS EFFECT)
@@ -29,7 +31,7 @@ body {
     box-shadow: 0 8px 25px rgba(0,0,0,0.35);
     backdrop-filter: blur(14px);
     margin-bottom: 25px;
-    transition: 0.25s ease;
+    transition: 0.25s;
 }
 .glass-card:hover {
     transform: translateY(-3px);
@@ -65,19 +67,9 @@ div.stButton > button:hover {
     background: linear-gradient(90deg,#9a63ff,#5b8bff);
     transform:scale(1.02);
 }
-
-.stTabs [role="tablist"] button {
-    background: rgba(255,255,255,0.08);
-    border-radius:12px;
-    margin-right:10px;
-    padding:12px 16px;
-    font-size:16px;
-}
-.stTabs [role="tablist"] button:hover {
-    background: rgba(255,255,255,0.18);
-}
 </style>
 """, unsafe_allow_html=True)
+
 
 # -----------------------------------------------------
 # INIT SESSION STATE
@@ -91,6 +83,10 @@ def init_state():
 
     if "jobs" not in st.session_state:
         st.session_state.jobs = []
+
+    # CATEGORY SYSTEM FIX
+    if "categories" not in st.session_state:
+        st.session_state.categories = []
 
 
 # -----------------------------------------------------
@@ -123,9 +119,6 @@ def staff_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("👷 Staff & Workload")
 
-    st.session_state.staff["count"] = int(st.session_state.staff.get("count", 5))
-    st.session_state.staff["hours"] = float(st.session_state.staff.get("hours", 8.0))
-
     col1, col2 = st.columns(2)
 
     with col1:
@@ -142,7 +135,7 @@ def staff_ui():
 
 
 # -----------------------------------------------------
-# INVENTORY UI
+# INVENTORY UI (WITH CATEGORY ADD + SELECT + FILTER)
 # -----------------------------------------------------
 def inventory_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
@@ -150,14 +143,11 @@ def inventory_ui():
 
     st.markdown("### ➕ Manage Categories")
 
-    colA, colB = st.columns([2, 2])
+    colA, colB = st.columns(2)
 
-    # -----------------------
     # 1️⃣ ADD NEW CATEGORY
-    # -----------------------
     with colA:
         new_cat = st.text_input("Add New Category")
-
         if st.button("Add Category"):
             if new_cat.strip():
                 if new_cat not in st.session_state.categories:
@@ -167,14 +157,12 @@ def inventory_ui():
                 else:
                     st.warning("Category already exists.")
             else:
-                st.error("Category name cannot be empty.")
+                st.error("Category cannot be empty.")
 
-    # -----------------------
-    # 2️⃣ SELECT CATEGORY
-    # -----------------------
+    # 2️⃣ SELECT CATEGORY FOR NEW ITEMS
     with colB:
         if st.session_state.categories:
-            selected_category = st.selectbox("Select Category for Item", st.session_state.categories)
+            selected_category = st.selectbox("Select Category for Inventory Item", st.session_state.categories)
         else:
             selected_category = None
             st.info("No categories added yet.")
@@ -214,30 +202,27 @@ def inventory_ui():
             st.error("Item name cannot be empty.")
 
     st.markdown("---")
-    st.subheader("📋 Inventory List (Sortable + Filterable)")
+    st.subheader("📋 Inventory List (Filterable)")
 
     if len(st.session_state.inventory) == 0:
         st.info("No inventory items added yet.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # FILTER INVENTORY BY CATEGORY
-    filter_categories = ["All"] + st.session_state.categories
-    filter_choice = st.selectbox("Filter by Category", filter_categories)
+    filter_opts = ["All"] + st.session_state.categories
+    filter_choice = st.selectbox("Filter by Category", filter_opts)
 
     if filter_choice == "All":
-        filtered_items = st.session_state.inventory
+        filtered = st.session_state.inventory
     else:
-        filtered_items = [item for item in st.session_state.inventory if item["Category"] == filter_choice]
+        filtered = [item for item in st.session_state.inventory if item["Category"] == filter_choice]
 
-    st.table(filtered_items)
+    st.table(filtered)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-
-
 # -----------------------------------------------------
-# JOBS UI (WITH DELETE + JOBS SHOWN AT BOTTOM)
+# JOBS UI (WITH DELETE + JOBS AT BOTTOM)
 # -----------------------------------------------------
 def jobs_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
@@ -248,68 +233,60 @@ def jobs_ui():
     with col1:
         job_name = st.text_input("Job Name")
         qty = st.number_input("Quantity", 1, 100000, 100)
+
     with col2:
         due_date = st.date_input("Due Date", date.today())
 
-    num_processes = st.slider("Number of Processes", 1, 20, 5)
+    num_proc = st.slider("Number of Processes", 1, 20, 5)
 
     st.markdown("### 📝 Process Details")
-    process_list = []
+    processes = []
 
-    for i in range(num_processes):
+    for i in range(num_proc):
         colA, colB = st.columns([3, 1.2])
         with colA:
-            p_name = st.text_input(f"Process {i+1} Name", key=f"pname_{i}")
+            pname = st.text_input(f"Process {i+1} Name", key=f"pname_{i}")
         with colB:
-            p_hours = st.number_input(
-                "Hours",
-                0.5, 24.0,
-                3.0,
-                step=0.5,
-                key=f"phours_{i}"
-            )
-        process_list.append({"name": p_name, "hours": float(p_hours)})
+            phours = st.number_input("Hours", 0.5, 24.0, 3.0, step=0.5, key=f"phours_{i}")
+        processes.append({"name": pname, "hours": float(phours)})
 
     if st.button("Add Job"):
         if not job_name.strip():
             st.error("Job name required.")
-        elif any(p["name"].strip() == "" for p in process_list):
-            st.error("All process names must be filled.")
+        elif any(p["name"].strip() == "" for p in processes):
+            st.error("All process names required.")
         else:
             st.session_state.jobs.append({
                 "name": job_name,
-                "qty": int(qty),
+                "qty": qty,
                 "due": due_date,
-                "processes": process_list
+                "processes": processes
             })
-            st.success("Job added successfully!")
+            st.success("Job added!")
             st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ------------------------------
-    # SHOW JOBS AT THE BOTTOM
-    # ------------------------------
+    # ---------------- JOBS LIST AT BOTTOM ----------------
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("📋 Existing Jobs")
 
-    if st.session_state.jobs:
-        for idx, job in enumerate(st.session_state.jobs):
-            with st.expander(f"📦 {job['name']} — Due: {job['due'].isoformat()}"):
-
-                st.write(f"**Quantity:** {job['qty']} units")
-                st.write("### 🛠 Processes:")
-                for p in job["processes"]:
-                    st.write(f"- **{p['name']}** — {p['hours']} hrs")
-
-                st.markdown("---")
-
-                if st.button(f"🗑 Delete Job '{job['name']}'", key=f"delete_{idx}"):
-                    st.session_state.jobs.pop(idx)
-                    st.success(f"Deleted job: {job['name']}")
-                    st.rerun()
-    else:
+    if len(st.session_state.jobs) == 0:
         st.info("No jobs added yet.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    for idx, job in enumerate(st.session_state.jobs):
+        with st.expander(f"📦 {job['name']} — Due {job['due']}"):
+            st.write(f"**Quantity:** {job['qty']}")
+            st.write("### Processes:")
+            for p in job["processes"]:
+                st.write(f"- {p['name']} — {p['hours']} hrs")
+
+            if st.button(f"🗑 Delete Job '{job['name']}'", key=f"del{idx}"):
+                st.session_state.jobs.pop(idx)
+                st.success("Job deleted.")
+                st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -319,11 +296,11 @@ def jobs_ui():
 # -----------------------------------------------------
 def planner_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-    st.subheader("📅 AI Workload Planner")
+    st.subheader("📅 AI Daily Planner")
 
     if st.button("Generate Today's Plan"):
-        if not st.session_state.jobs:
-            st.warning("No jobs available.")
+        if len(st.session_state.jobs) == 0:
+            st.warning("No jobs added.")
         else:
             tasks, used, total = plan_today(
                 st.session_state.jobs,
@@ -331,30 +308,22 @@ def planner_ui():
                 st.session_state.staff["hours"]
             )
 
-            if not tasks:
-                st.warning("No tasks fit in today's capacity.")
-            else:
-                st.success(f"Planned {len(tasks)} tasks — Used {used}/{total} hours")
-                st.table(tasks)
+            st.success(f"Planned {len(tasks)} tasks — Used {used}/{total} hrs")
+            st.table(tasks)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 
 # -----------------------------------------------------
-# MAIN
+# MAIN APP
 # -----------------------------------------------------
 def main():
     init_state()
 
     st.markdown("<h1 class='header-title'>🏭 Factory-Management.AI</h1>", unsafe_allow_html=True)
-    st.markdown("<p class='header-sub'>Premium AI dashboard for workforce, inventory & job planning.</p>", unsafe_allow_html=True)
+    st.markdown("<p class='header-sub'>A premium AI dashboard to manage workforce, inventory & factory workload.</p>", unsafe_allow_html=True)
 
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "👷 Staff",
-        "📦 Inventory",
-        "🧾 Jobs",
-        "📅 Planner"
-    ])
+    tab1, tab2, tab3, tab4 = st.tabs(["👷 Staff", "📦 Inventory", "🧾 Jobs", "📅 Planner"])
 
     with tab1: staff_ui()
     with tab2: inventory_ui()
