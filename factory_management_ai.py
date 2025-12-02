@@ -1,3 +1,6 @@
+import firebase_admin
+from firebase_admin import credentials, firestore
+
 import os
 import json
 from datetime import datetime, timedelta, date
@@ -22,22 +25,16 @@ OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", None)
 client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
 
 # ============================================================
-# FIREBASE INIT (USING st.secrets["firebase"])
+# FIREBASE INIT (USING JSON FILE IN REPO)
 # ============================================================
 db = None
-firebase_config = st.secrets.get("firebase", None)
-
-if firebase_config:
-    try:
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(firebase_config)
-            firebase_admin.initialize_app(cred)
-        db = firestore.client()
-    except Exception as e:
-        st.error(f"Firebase init error: {e}")
-        db = None
-else:
-    st.warning("⚠ No Firebase config found in st.secrets['firebase']. Data will not be saved permanently.")
+try:
+    if not firebase_admin._apps:
+        cred = credentials.Certificate("serviceAccountKey.json")
+        firebase_admin.initialize_app(cred)
+    db = firestore.client()
+except Exception as e:
+    st.error(f"Firebase initialization failed: {e}")
 
 # ============================================================
 # SESSION STATE INIT (USED AS CACHE ONLY)
