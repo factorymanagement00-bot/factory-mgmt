@@ -148,7 +148,39 @@ def inventory_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("📦 Inventory")
 
-    st.markdown("### ➕ Add Inventory Item")
+    st.markdown("### ➕ Manage Categories")
+
+    colA, colB = st.columns([2, 2])
+
+    # -----------------------
+    # 1️⃣ ADD NEW CATEGORY
+    # -----------------------
+    with colA:
+        new_cat = st.text_input("Add New Category")
+
+        if st.button("Add Category"):
+            if new_cat.strip():
+                if new_cat not in st.session_state.categories:
+                    st.session_state.categories.append(new_cat)
+                    st.success(f"Category '{new_cat}' added!")
+                    st.rerun()
+                else:
+                    st.warning("Category already exists.")
+            else:
+                st.error("Category name cannot be empty.")
+
+    # -----------------------
+    # 2️⃣ SELECT CATEGORY
+    # -----------------------
+    with colB:
+        if st.session_state.categories:
+            selected_category = st.selectbox("Select Category for Item", st.session_state.categories)
+        else:
+            selected_category = None
+            st.info("No categories added yet.")
+
+    st.markdown("---")
+    st.subheader("➕ Add Inventory Item")
 
     col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -156,7 +188,7 @@ def inventory_ui():
         name = st.text_input("Item Name")
 
     with col2:
-        category = st.text_input("Category (Type anything)")
+        category = selected_category if selected_category else "Uncategorized"
 
     with col3:
         weight = st.number_input("Weight (kg)", 0.0, 100000.0, 0.0, step=0.1)
@@ -171,41 +203,34 @@ def inventory_ui():
         if name.strip():
             st.session_state.inventory.append({
                 "Item": name,
-                "Category": category if category.strip() else "N/A",
+                "Category": category,
                 "Weight (kg)": weight,
                 "Quantity": qty,
                 "Size": size if size.strip() else "N/A"
             })
             st.success("Item added successfully!")
+            st.rerun()
         else:
-            st.error("Item name cannot be empty")
+            st.error("Item name cannot be empty.")
 
     st.markdown("---")
     st.subheader("📋 Inventory List (Sortable + Filterable)")
 
-    # If inventory is empty
     if len(st.session_state.inventory) == 0:
         st.info("No inventory items added yet.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # -------- FILTER SECTION --------
-    categories = sorted(list(set(item["Category"] for item in st.session_state.inventory)))
-    categories.insert(0, "All")
+    # FILTER INVENTORY BY CATEGORY
+    filter_categories = ["All"] + st.session_state.categories
+    filter_choice = st.selectbox("Filter by Category", filter_categories)
 
-    selected_category = st.selectbox("Filter by Category", categories)
-
-    if selected_category == "All":
+    if filter_choice == "All":
         filtered_items = st.session_state.inventory
     else:
-        filtered_items = [
-            item for item in st.session_state.inventory 
-            if item["Category"] == selected_category
-        ]
+        filtered_items = [item for item in st.session_state.inventory if item["Category"] == filter_choice]
 
-    # Display filtered table
     st.table(filtered_items)
-
     st.markdown("</div>", unsafe_allow_html=True)
 
 
