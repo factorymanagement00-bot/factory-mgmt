@@ -150,21 +150,31 @@ def inventory_ui():
 
     st.markdown("### ➕ Add Inventory Item")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
         name = st.text_input("Item Name")
+
     with col2:
-        weight = st.number_input("Weight (kg)", 0.0, 100000.0, 0.0, step=0.1)
+        category = st.selectbox(
+            "Category",
+            ["Lamination", "Paper", "Glue", "Ink", "Packing", "Finished Goods", "Raw Material", "Other"]
+        )
+
     with col3:
-        qty = st.number_input("Quantity", 0, 100000, 0)
+        weight = st.number_input("Weight (kg)", 0.0, 100000.0, 0.0, step=0.1)
+
     with col4:
+        qty = st.number_input("Quantity", 0, 100000, 0)
+
+    with col5:
         size = st.text_input("Size (e.g. 10x20 cm)")
 
     if st.button("Add Inventory Item"):
         if name.strip():
             st.session_state.inventory.append({
                 "Item": name,
+                "Category": category,
                 "Weight (kg)": weight,
                 "Quantity": qty,
                 "Size": size if size.strip() else "N/A"
@@ -174,7 +184,7 @@ def inventory_ui():
             st.error("Item name cannot be blank.")
 
     st.markdown("---")
-    st.subheader("📋 Current Inventory")
+    st.subheader("📋 Inventory List (Sortable)")
 
     if st.session_state.inventory:
         st.table(st.session_state.inventory)
