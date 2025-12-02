@@ -144,33 +144,70 @@ def staff_ui():
 # -----------------------------------------------------
 # INVENTORY UI
 # -----------------------------------------------------
-    st.markdown("---")
-    st.subheader("📋 Inventory List (Sortable)")
+def inventory_ui():
+    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+    st.subheader("📦 Inventory")
 
-    if st.session_state.inventory:
+    st.markdown("### ➕ Add Inventory Item")
 
-        # 🔍 Collect all categories from inventory dynamically
-        categories = sorted(list(set(item["Category"] for item in st.session_state.inventory)))
+    col1, col2, col3, col4, col5 = st.columns(5)
 
-        # Add option to show all categories
-        categories.insert(0, "All")
+    with col1:
+        name = st.text_input("Item Name")
 
-        # User selects a category filter
-        selected_category = st.selectbox("Filter by Category", categories)
+    with col2:
+        category = st.text_input("Category (Type anything)")
 
-        # Apply filter
-        if selected_category == "All":
-            filtered_items = st.session_state.inventory
+    with col3:
+        weight = st.number_input("Weight (kg)", 0.0, 100000.0, 0.0, step=0.1)
+
+    with col4:
+        qty = st.number_input("Quantity", 0, 100000, 0)
+
+    with col5:
+        size = st.text_input("Size (e.g. 10x20 cm)")
+
+    if st.button("Add Inventory Item"):
+        if name.strip():
+            st.session_state.inventory.append({
+                "Item": name,
+                "Category": category if category.strip() else "N/A",
+                "Weight (kg)": weight,
+                "Quantity": qty,
+                "Size": size if size.strip() else "N/A"
+            })
+            st.success("Item added successfully!")
         else:
-            filtered_items = [item for item in st.session_state.inventory if item["Category"] == selected_category]
+            st.error("Item name cannot be empty")
 
-        # Show filtered table
-        st.table(filtered_items)
+    st.markdown("---")
+    st.subheader("📋 Inventory List (Sortable + Filterable)")
 
-    else:
+    # If inventory is empty
+    if len(st.session_state.inventory) == 0:
         st.info("No inventory items added yet.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # -------- FILTER SECTION --------
+    categories = sorted(list(set(item["Category"] for item in st.session_state.inventory)))
+    categories.insert(0, "All")
+
+    selected_category = st.selectbox("Filter by Category", categories)
+
+    if selected_category == "All":
+        filtered_items = st.session_state.inventory
+    else:
+        filtered_items = [
+            item for item in st.session_state.inventory 
+            if item["Category"] == selected_category
+        ]
+
+    # Display filtered table
+    st.table(filtered_items)
 
     st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 
