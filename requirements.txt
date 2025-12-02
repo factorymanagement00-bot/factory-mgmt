@@ -1,5 +1,4 @@
+google-generativeai
 streamlit
 pandas
-python-dotenv
-openai
 firebase-admin
