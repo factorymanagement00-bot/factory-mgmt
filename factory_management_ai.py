@@ -6,20 +6,41 @@ import streamlit as st
 import pandas as pd
 from openai import OpenAI
 
+# Firebase
+import firebase_admin
+from firebase_admin import credentials, firestore
+
 # ============================================================
 # CONFIG
 # ============================================================
 st.set_page_config(page_title="Factory Management AI", layout="wide")
 
 # ============================================================
-# OPENAI CLIENT (USING st.secrets, NO dotenv)
+# OPENAI CLIENT (USING st.secrets)
 # ============================================================
 OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", None)
 client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
 
+# ============================================================
+# FIREBASE INIT (USING st.secrets["firebase"])
+# ============================================================
+db = None
+firebase_config = st.secrets.get("firebase", None)
+
+if firebase_config:
+    try:
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(firebase_config)
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+    except Exception as e:
+        st.error(f"Firebase init error: {e}")
+        db = None
+else:
+    st.warning("⚠ No Firebase config found in st.secrets['firebase']. Data will not be saved permanently.")
 
 # ============================================================
-# SESSION STATE INIT
+# SESSION STATE INIT (USED AS CACHE ONLY)
 # ============================================================
 if "inventory" not in st.session_state:
     st.session_state.inventory = []  # list[dict]
@@ -31,7 +52,7 @@ if "jobs" not in st.session_state:
     st.session_state.jobs = []  # list[dict]
 
 if "task_done" not in st.session_state:
-    # key: "jobIndex_processIndex" -> bool
+    # key: "jobId_processIndex" -> bool
     st.session_state.task_done = {}
 
 if "staff_count" not in st.session_state:
@@ -39,6 +60,110 @@ if "staff_count" not in st.session_state:
 
 if "work_hours" not in st.session_state:
     st.session_state.work_hours = 8
+
+
+# ============================================================
+# FIREBASE HELPERS
+# ============================================================
+def get_categories_from_db():
+    if db is None:
+        return st.session_state.get("categories", [])
+
+    names = set()
+    for doc in db.collection("categories").stream():
+        data = doc.to_dict()
+        name = data.get("name")
+        if name:
+            names.add(name)
+    return sorted(list(names))
+
+
+def add_category_to_db(name: str):
+    if db is None:
+        return
+    db.collection("categories").add({"name": name})
+
+
+def get_inventory_from_db():
+    if db is None:
+        return st.session_state.get("inventory", [])
+    items = []
+    for doc in db.collection("inventory").stream():
+        data = doc.to_dict()
+        data["id"] = doc.id
+        items.append(data)
+    return items
+
+
+def add_inventory_item_to_db(item: dict):
+    if db is None:
+        return
+    db.collection("inventory").add(item)
+
+
+def delete_inventory_item_from_db(doc_id: str):
+    if db is None:
+        return
+    db.collection("inventory").document(doc_id).delete()
+
+
+def get_jobs_from_db():
+    if db is None:
+        return st.session_state.get("jobs", [])
+    jobs = []
+    for doc in db.collection("jobs").stream():
+        data = doc.to_dict()
+        data["id"] = doc.id
+        jobs.append(data)
+    return jobs
+
+
+def add_job_to_db(job_doc: dict):
+    if db is None:
+        return
+    db.collection("jobs").add(job_doc)
+
+
+def get_task_done_map_from_db():
+    if db is None:
+        return st.session_state.get("task_done", {})
+    done_map = {}
+    for doc in db.collection("task_done").stream():
+        data = doc.to_dict()
+        done_map[doc.id] = bool(data.get("done", False))
+    return done_map
+
+
+def set_task_done_in_db(task_id: str, done: bool):
+    if db is None:
+        return
+    db.collection("task_done").document(task_id).set({"done": done})
+
+
+def load_settings_from_db():
+    staff = st.session_state.staff_count
+    hours = st.session_state.work_hours
+    if db is None:
+        return staff, hours
+
+    doc = db.collection("settings").document("factory").get()
+    if doc.exists:
+        data = doc.to_dict()
+        staff = int(data.get("staff_count", staff))
+        hours = int(data.get("work_hours", hours))
+    return staff, hours
+
+
+def save_settings_to_db(staff_count: int, work_hours: int):
+    if db is None:
+        return
+    db.collection("settings").document("factory").set(
+        {
+            "staff_count": staff_count,
+            "work_hours": work_hours,
+        },
+        merge=True,
+    )
 
 
 # ============================================================
@@ -116,11 +241,12 @@ Return ONLY valid JSON, with this structure:
 # ============================================================
 def smart_batch_schedule(jobs, done_map):
     """
-    Your local smart planner:
+    Local smart planner:
     - Sorts jobs by due date
     - Batches same process names for close-due jobs
     - Handles lunch break
     - Skips processes marked done
+    Uses stable task_id: "<job_id>_<process_index>"
     """
     start_dt = datetime.strptime("09:00", "%H:%M")
     lunch_start = datetime.strptime("13:00", "%H:%M")
@@ -130,7 +256,8 @@ def smart_batch_schedule(jobs, done_map):
     tasks = []
 
     # Flatten job processes
-    for j_idx, job in enumerate(jobs):
+    for idx, job in enumerate(jobs):
+        job_id = job.get("id", str(idx))
         try:
             due = datetime.strptime(job["due"], "%Y-%m-%d").date()
         except Exception:
@@ -140,7 +267,7 @@ def smart_batch_schedule(jobs, done_map):
                 due = today
 
         for p_idx, p in enumerate(job["processes"]):
-            tid = f"{j_idx}_{p_idx}"
+            tid = f"{job_id}_{p_idx}"
             if done_map.get(tid, False):
                 continue
 
@@ -246,12 +373,18 @@ def smart_batch_schedule(jobs, done_map):
 def inventory_page():
     st.title("📦 Inventory")
 
+    # sync with Firestore
+    st.session_state.categories = get_categories_from_db()
+    st.session_state.inventory = get_inventory_from_db()
+
     with st.expander("Add Category"):
         new_cat = st.text_input("Category name")
         if st.button("Save Category"):
-            if new_cat.strip() and new_cat not in st.session_state.categories:
+            if new_cat.strip() and new_cat.strip() not in st.session_state.categories:
+                add_category_to_db(new_cat.strip())
                 st.session_state.categories.append(new_cat.strip())
                 st.success("Category added.")
+                st.experimental_rerun()
             else:
                 st.warning("Invalid or duplicate category.")
 
@@ -266,14 +399,16 @@ def inventory_page():
         if not name.strip():
             st.warning("Item name required.")
         else:
-            st.session_state.inventory.append({
+            item = {
                 "name": name.strip(),
                 "category": cat if cat != "None" else "",
                 "quantity": qty,
                 "size": size,
                 "weight": weight,
-            })
+            }
+            add_inventory_item_to_db(item)
             st.success("Item added.")
+            st.experimental_rerun()
 
     st.markdown("---")
     st.subheader("Inventory List")
@@ -283,12 +418,13 @@ def inventory_page():
     else:
         for i, item in enumerate(st.session_state.inventory):
             col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
-            col1.write(f"**{item['name']}**")
-            col2.write(item["category"] or "—")
-            col3.write(f"Qty: {item['quantity']}")
-            col4.write(f"Size: {item['size']}")
-            if col5.button("🗑️", key=f"inv_del_{i}"):
-                st.session_state.inventory.pop(i)
+            col1.write(f"**{item.get('name', '')}**")
+            col2.write(item.get("category") or "—")
+            col3.write(f"Qty: {item.get('quantity', 0)}")
+            col4.write(f"Size: {item.get('size', '')}")
+            if col5.button("🗑️", key=f"inv_del_{item.get('id', i)}"):
+                if "id" in item:
+                    delete_inventory_item_from_db(item["id"])
                 st.experimental_rerun()
 
 
@@ -297,6 +433,11 @@ def inventory_page():
 # ============================================================
 def jobs_page():
     st.title("🧾 Jobs")
+
+    # sync from Firestore
+    st.session_state.categories = get_categories_from_db()
+    st.session_state.inventory = get_inventory_from_db()
+    st.session_state.jobs = get_jobs_from_db()
 
     job_name = st.text_input("Job name")
     due_date = st.date_input("Due date")
@@ -308,26 +449,49 @@ def jobs_page():
         st.markdown(f"### Process {i+1}")
 
         pname = st.text_input(f"Process name {i+1}", key=f"pname_{i}")
-        hours = st.number_input(f"Hours for process {i+1}", min_value=0.5, step=0.5, value=1.0, key=f"phours_{i}")
-        workers = st.number_input(f"Workers for process {i+1}", min_value=1, value=1, key=f"pworkers_{i}")
+        hours = st.number_input(
+            f"Hours for process {i+1}",
+            min_value=0.5,
+            step=0.5,
+            value=1.0,
+            key=f"phours_{i}",
+        )
+        workers = st.number_input(
+            f"Workers for process {i+1}",
+            min_value=1,
+            value=1,
+            key=f"pworkers_{i}",
+        )
         machine = st.text_input(f"Machine (optional) {i+1}", key=f"pmachine_{i}")
 
         cat = st.selectbox(
             f"Category (optional) {i+1}",
             ["None"] + st.session_state.categories,
-            key=f"pcat_{i}"
+            key=f"pcat_{i}",
         )
 
         item = None
         size = None
         if cat != "None":
-            items = ["None"] + [inv["name"] for inv in st.session_state.inventory if inv["category"] == cat]
-            item_sel = st.selectbox(f"Inventory item {i+1}", items, key=f"pitem_{i}")
+            inv_for_cat = [
+                inv for inv in st.session_state.inventory
+                if inv.get("category") == cat
+            ]
+            items = ["None"] + [inv["name"] for inv in inv_for_cat]
+            item_sel = st.selectbox(
+                f"Inventory item {i+1}",
+                items,
+                key=f"pitem_{i}",
+            )
             if item_sel != "None":
                 item = item_sel
 
-            sizes = ["None"] + [inv["size"] for inv in st.session_state.inventory if inv["category"] == cat]
-            size_sel = st.selectbox(f"Size {i+1}", sizes, key=f"psize_{i}")
+            sizes = ["None"] + [str(inv.get("size", "")) for inv in inv_for_cat]
+            size_sel = st.selectbox(
+                f"Size {i+1}",
+                sizes,
+                key=f"psize_{i}",
+            )
             if size_sel != "None":
                 size = size_sel
 
@@ -347,24 +511,26 @@ def jobs_page():
         if not job_name.strip():
             st.warning("Job name required.")
         else:
-            st.session_state.jobs.append({
+            job_doc = {
                 "job": job_name.strip(),
                 "due": due_date.isoformat(),
                 "processes": processes,
-            })
-            st.session_state.task_done = {}  # reset done status
+            }
+            add_job_to_db(job_doc)
+            st.session_state.task_done = {}  # reset cache
             st.success("Job saved.")
+            st.experimental_rerun()
 
     st.markdown("## Existing Jobs")
     if not st.session_state.jobs:
         st.info("No jobs saved yet.")
     else:
-        for j_idx, job in enumerate(st.session_state.jobs):
+        for job in st.session_state.jobs:
             with st.expander(f"{job['job']} (Due {job['due']})"):
                 for p in job["processes"]:
                     st.write(
                         f"- {p['name']} — {p['hours']} hrs, "
-                        f"workers: {p['workers']}, machine: {p['machine'] or '—'}"
+                        f"workers: {p['workers']}, machine: {p.get('machine') or '—'}"
                     )
 
 
@@ -373,6 +539,12 @@ def jobs_page():
 # ============================================================
 def planner_page():
     st.title("🧠 Planner")
+
+    # sync latest data from Firestore
+    st.session_state.jobs = get_jobs_from_db()
+    st.session_state.inventory = get_inventory_from_db()
+    st.session_state.task_done = get_task_done_map_from_db()
+    st.session_state.staff_count, st.session_state.work_hours = load_settings_from_db()
 
     if not st.session_state.jobs:
         st.info("No jobs to plan yet.")
@@ -429,6 +601,7 @@ def planner_page():
                 key=f"done_{tid}",
             )
             st.session_state.task_done[tid] = done_flag
+            set_task_done_in_db(tid, done_flag)
 
     st.info("Refresh / rerun to rebuild schedule using remaining (not done) processes.")
 
@@ -442,6 +615,11 @@ def ai_chat_page():
     if client is None:
         st.error("No OPENAI_API_KEY set in Streamlit secrets. Chat is disabled.")
         return
+
+    # make sure context is fresh
+    st.session_state.jobs = get_jobs_from_db()
+    st.session_state.inventory = get_inventory_from_db()
+    st.session_state.staff_count, st.session_state.work_hours = load_settings_from_db()
 
     st.write("Ask anything about your jobs, inventory, planning, etc.")
 
@@ -494,14 +672,24 @@ Do not invent fake jobs; talk only about the provided data.
 def staff_page():
     st.title("👷 Staff & Workday Settings")
 
-    st.session_state.staff_count = st.number_input(
-        "Total staff (info used by AI planner)", min_value=1, value=st.session_state.staff_count
+    st.session_state.staff_count, st.session_state.work_hours = load_settings_from_db()
+
+    staff_count = st.number_input(
+        "Total staff (info used by AI planner)",
+        min_value=1,
+        value=st.session_state.staff_count,
     )
-    st.session_state.work_hours = st.number_input(
-        "Work hours per staff per day", min_value=1, value=st.session_state.work_hours
+    work_hours = st.number_input(
+        "Work hours per staff per day",
+        min_value=1,
+        value=st.session_state.work_hours,
     )
 
-    st.success("Settings saved.")
+    if st.button("Save Settings"):
+        st.session_state.staff_count = staff_count
+        st.session_state.work_hours = work_hours
+        save_settings_to_db(staff_count, work_hours)
+        st.success("Settings saved.")
 
 
 # ============================================================
