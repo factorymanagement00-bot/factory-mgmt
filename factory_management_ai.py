@@ -167,6 +167,148 @@ elif page == "Jobs":
             "processes": processes
         })
         st.success("Job saved successfully!")
+def build_smart_schedule(jobs, task_done_state):
+    """
+    Build a schedule that:
+    - sorts jobs by due date
+    - batches same process names for close-due jobs
+    - skips processes marked as done in task_done_state
+    """
+
+    start_time = datetime.strptime("09:00", "%H:%M")
+    lunch_start = datetime.strptime("13:00", "%H:%M")
+    lunch_end = datetime.strptime("14:00", "%H:%M")
+
+    # Build flat list of all remaining processes
+    all_tasks = []
+    for j_idx, job in enumerate(jobs):
+        for p_idx, p in enumerate(job["processes"]):
+            task_id = f"{j_idx}_{p_idx}"
+            # skip if already marked done
+            if task_done_state.get(task_id, False):
+                continue
+
+            # parse due date (stored as string "YYYY-MM-DD")
+            try:
+                due_dt = datetime.strptime(job["due"], "%Y-%m-%d").date()
+            except Exception:
+                # if stored differently, just ignore parsing
+                due_dt = datetime.today().date()
+
+            all_tasks.append({
+                "task_id": task_id,
+                "job_name": job["job"],
+                "due": due_dt,
+                "due_str": job["due"],
+                "process_name": p["name"],
+                "hours": float(p["hours"]),
+                "workers": p["workers"],
+                "machine": p.get("machine", None),
+            })
+
+    # sort by due date first
+    all_tasks.sort(key=lambda t: t["due"])
+
+    schedule = []
+    cur_time = start_time
+    today = datetime.today().date()
+
+    scheduled_ids = set()
+
+    i = 0
+    n = len(all_tasks)
+
+    while i < n:
+        if all_tasks[i]["task_id"] in scheduled_ids:
+            i += 1
+            continue
+
+        base = all_tasks[i]
+        base_id = base["task_id"]
+        base_name = base["process_name"].strip().lower()
+        base_due = base["due"]
+
+        # schedule this base process
+        hrs = base["hours"]
+        start = cur_time
+
+        # handle lunch break
+        end = start + timedelta(hours=hrs)
+        if start < lunch_start < end:
+            end += (lunch_end - lunch_start)
+
+        # due status: for visual info
+        if base_due < today:
+            due_status = "OVERDUE"
+        elif base_due <= today + timedelta(days=1):
+            due_status = "NEAR DUE"
+        else:
+            due_status = "OK"
+
+        schedule.append({
+            "task_id": base_id,
+            "Job": base["job_name"],
+            "Due Date": base["due_str"],
+            "Due Status": due_status,
+            "Process": base["process_name"],
+            "Machine": base["machine"],
+            "Workers": base["workers"],
+            "Hours": base["hours"],
+            "Start": start.strftime("%I:%M %p"),
+            "End": end.strftime("%I:%M %p"),
+            "Status": "SCHEDULED"
+        })
+
+        scheduled_ids.add(base_id)
+        cur_time = end
+
+        # now try to batch other tasks with same process name & close due date
+        for j in range(i + 1, n):
+            t = all_tasks[j]
+            if t["task_id"] in scheduled_ids:
+                continue
+
+            # same process name?
+            if t["process_name"].strip().lower() != base_name:
+                continue
+
+            # due date "close" (|Δdays| <= 2, you can tweak)
+            if abs((t["due"] - base_due).days) > 2:
+                continue
+
+            hrs2 = t["hours"]
+            start2 = cur_time
+            end2 = start2 + timedelta(hours=hrs2)
+            if start2 < lunch_start < end2:
+                end2 += (lunch_end - lunch_start)
+
+            if t["due"] < today:
+                due_status2 = "OVERDUE"
+            elif t["due"] <= today + timedelta(days=1):
+                due_status2 = "NEAR DUE"
+            else:
+                due_status2 = "OK"
+
+            schedule.append({
+                "task_id": t["task_id"],
+                "Job": t["job_name"],
+                "Due Date": t["due_str"],
+                "Due Status": due_status2,
+                "Process": t["process_name"],
+                "Machine": t["machine"],
+                "Workers": t["workers"],
+                "Hours": t["hours"],
+                "Start": start2.strftime("%I:%M %p"),
+                "End": end2.strftime("%I:%M %p"),
+                "Status": "SCHEDULED"
+            })
+
+            scheduled_ids.add(t["task_id"])
+            cur_time = end2
+
+        i += 1
+
+    return schedule
 
 # ============================================================
 #                        PLANNER PAGE
