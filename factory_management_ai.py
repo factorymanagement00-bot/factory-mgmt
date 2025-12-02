@@ -156,10 +156,7 @@ def inventory_ui():
         name = st.text_input("Item Name")
 
     with col2:
-        category = st.selectbox(
-            "Category",
-            ["Lamination", "Paper", "Glue", "Ink", "Packing", "Finished Goods", "Raw Material", "Other"]
-        )
+        category = st.text_input("Category (Type anything)")
 
     with col3:
         weight = st.number_input("Weight (kg)", 0.0, 100000.0, 0.0, step=0.1)
@@ -174,7 +171,7 @@ def inventory_ui():
         if name.strip():
             st.session_state.inventory.append({
                 "Item": name,
-                "Category": category,
+                "Category": category if category.strip() else "N/A",
                 "Weight (kg)": weight,
                 "Quantity": qty,
                 "Size": size if size.strip() else "N/A"
@@ -192,6 +189,7 @@ def inventory_ui():
         st.info("No inventory items added yet.")
 
     st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 # -----------------------------------------------------
