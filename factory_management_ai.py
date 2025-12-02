@@ -172,7 +172,7 @@ def inventory_ui():
     st.markdown("### ➕ Add Inventory Item")
 
     # FORM for adding inventory
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         name = st.text_input("Item Name")
@@ -183,12 +183,16 @@ def inventory_ui():
     with col3:
         qty = st.number_input("Quantity", min_value=0, max_value=100000, value=0, step=1)
 
+    with col4:
+        size = st.text_input("Size (e.g. 10x20 cm)")
+
     if st.button("Add Inventory Item"):
         if name.strip():
             st.session_state.inventory.append({
                 "Item": name,
                 "Weight (kg)": weight,
                 "Quantity": qty,
+                "Size": size if size.strip() else "N/A"
             })
             st.success("Inventory item added!")
         else:
