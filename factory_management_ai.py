@@ -282,14 +282,11 @@ def jobs_ui():
     inventory = st.session_state.inventory
     categories = st.session_state.categories
 
-    if not inventory or not categories:
-        st.info("Tip: Add some inventory items and categories first so you can link materials to processes.")
-
     # ---------- PROCESS LOOP ----------
     for i in range(num_proc):
-        st.markdown(f"#### Process {i+1}")
+        st.markdown(f"### Process {i+1}")
 
-        # Row 1: name + hours
+        # Row 1: Process Name + Hours
         colA, colB = st.columns([3, 1.2])
         with colA:
             pname = st.text_input(f"Process {i+1} Name", key=f"pname_{i}")
@@ -297,65 +294,59 @@ def jobs_ui():
             phours = st.number_input(
                 "Hours",
                 0.5, 24.0,
-                3.0,
-                step=0.5,
+                3.0, step=0.5,
                 key=f"phours_{i}"
             )
 
-        # Row 2: material link (category -> item -> size)
+        # ---------- MATERIAL SELECTION ----------
         colC, colD, colE = st.columns([2, 2, 1.5])
 
-        # CATEGORY
+        # CATEGORY (OPTIONAL)
         with colC:
-            if categories:
-                p_cat = st.selectbox(
-                    "Category",
-                    options=categories,
-                    key=f"pcat_{i}"
-                )
-            else:
-                p_cat = ""
-                st.write("No categories")
+            p_cat = st.selectbox(
+                "Category (optional)",
+                options=["None"] + categories,
+                key=f"pcat_{i}"
+            )
+            if p_cat == "None":
+                p_cat = ""   # store empty
 
-        # INVENTORY ITEM (filtered by category)
+        # INVENTORY ITEM (OPTIONAL, depends on category)
         with colD:
             if p_cat:
-                items_for_cat = sorted(
-                    {item["Item"] for item in inventory if item["Category"] == p_cat}
-                )
+                items_for_cat = sorted({item["Item"] for item in inventory if item["Category"] == p_cat})
+                items_for_cat = ["None"] + items_for_cat
             else:
-                items_for_cat = []
+                items_for_cat = ["None"]
 
-            if items_for_cat:
-                p_item = st.selectbox(
-                    "Inventory Item",
-                    options=items_for_cat,
-                    key=f"pitem_{i}"
-                )
-            else:
+            p_item = st.selectbox(
+                "Inventory Item (optional)",
+                options=items_for_cat,
+                key=f"pitem_{i}"
+            )
+            if p_item == "None":
                 p_item = ""
-                st.write("No items for this category")
 
-        # SIZE (filtered by item + category)
+        # SIZE (OPTIONAL, depends on item)
         with colE:
             if p_cat and p_item:
-                sizes_for_item = sorted(
-                    {str(item["Size"]) for item in inventory
-                     if item["Category"] == p_cat and item["Item"] == p_item}
-                )
+                sizes_for_item = sorted({
+                    str(item["Size"]) for item in inventory
+                    if item["Category"] == p_cat and item["Item"] == p_item
+                })
+                sizes_for_item = ["None"] + sizes_for_item
             else:
-                sizes_for_item = []
+                sizes_for_item = ["None"]
 
-            if sizes_for_item:
-                p_size = st.selectbox(
-                    "Size",
-                    options=sizes_for_item,
-                    key=f"psize_{i}"
-                )
-            else:
+            p_size = st.selectbox(
+                "Size (optional)",
+                options=sizes_for_item,
+                key=f"psize_{i}"
+            )
+            if p_size == "None":
                 p_size = ""
-                st.write("No size")
 
+        # Save this process
         processes.append({
             "name": pname,
             "hours": float(phours),
@@ -372,9 +363,6 @@ def jobs_ui():
             st.error("Job name required.")
         elif any(p["name"].strip() == "" for p in processes):
             st.error("All process names are required.")
-        elif any((p["material_category"] == "" or p["material_item"] == "" or p["material_size"] == "")
-                 for p in processes):
-            st.error("Please select category, inventory item and size for every process.")
         else:
             st.session_state.jobs.append({
                 "name": job_name,
@@ -387,7 +375,9 @@ def jobs_ui():
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---------- JOB LIST AT BOTTOM ----------
+    # --------------------------------------------------------------------
+    #                       EXISTING JOB LIST
+    # --------------------------------------------------------------------
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("📋 Existing Jobs")
 
@@ -399,18 +389,25 @@ def jobs_ui():
     for idx, job in enumerate(st.session_state.jobs):
         with st.expander(f"📦 {job['name']} — Due {job['due']}"):
             st.write(f"**Quantity:** {job['qty']}")
+
             st.write("### Processes:")
             for p in job["processes"]:
-                mat = f"{p['material_category']} / {p['material_item']} / {p['material_size']}" \
-                    if p['material_category'] else "No material linked"
-                st.write(f"- {p['name']} — {p['hours']} hrs  |  Material: {mat}")
+                if p["material_category"]:
+                    mat = f"{p['material_category']} → {p['material_item']} → {p['material_size']}"
+                else:
+                    mat = "No material selected"
 
+                st.write(f"- **{p['name']}** — {p['hours']} hrs  
+                          Material: *{mat}*")
+
+            # DELETE BUTTON
             if st.button(f"🗑 Delete Job '{job['name']}'", key=f"del_job_{idx}"):
                 st.session_state.jobs.pop(idx)
                 st.success("Job deleted.")
                 st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 # -----------------------------------------------------
