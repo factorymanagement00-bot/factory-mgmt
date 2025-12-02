@@ -1,32 +1,30 @@
-import firebase_admin
-from firebase_admin import credentials, firestore
-
 import os
 import json
 from datetime import datetime, timedelta, date
 
 import streamlit as st
 import pandas as pd
-from openai import OpenAI
 
-# Firebase
+# GOOGLE AI (GEMINI)
+import google.generativeai as genai
+
+# FIREBASE
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# ============================================================
-# CONFIG
-# ============================================================
+# STREAMLIT CONFIG
 st.set_page_config(page_title="Factory Management AI", layout="wide")
 
-# ============================================================
-# OPENAI CLIENT (USING st.secrets)
-# ============================================================
-GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "AIzaSyDDJeCs0a3eBQ9EX5WIEScvH7yE6neKqEk")
-client = google(api_key=GOOGLE_API_KEY) if GOOGLE_API_KEY else None
+# GEMINI API KEY
+GEMINI_KEY = st.secrets.get("GEMINI_API_KEY")
 
-# ============================================================
-# FIREBASE INIT (USING JSON FILE IN REPO)
-# ============================================================
+if GEMINI_KEY:
+    genai.configure(api_key=GEMINI_KEY)
+    gemini = genai.GenerativeModel("gemini-1.5-flash")
+else:
+    gemini = None
+
+# FIREBASE INIT
 db = None
 try:
     if not firebase_admin._apps:
