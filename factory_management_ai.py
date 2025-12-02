@@ -74,3 +74,78 @@ page = st.sidebar.radio(
     ["Inventory", "Jobs", "Planner", "Staff Settings"],
 )
 
+# ============================================================
+#              INVENTORY MANAGEMENT UI — PART 2
+# ============================================================
+
+if page == "Inventory":
+
+    st.title("📦 Inventory Management")
+
+    st.subheader("➕ Add Category")
+    new_cat = st.text_input("Enter new category name")
+
+    if st.button("Add Category"):
+        if new_cat.strip() == "":
+            st.warning("Category cannot be empty.")
+        elif new_cat in st.session_state.categories:
+            st.warning("Category already exists!")
+        else:
+            st.session_state.categories.append(new_cat)
+            st.success(f"Category '{new_cat}' added!")
+
+    st.markdown("---")
+
+    st.subheader("➕ Add Inventory Item")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        item_name = st.text_input("Item Name")
+
+    with col2:
+        category = st.selectbox(
+            "Select Category",
+            ["None"] + st.session_state.categories
+        )
+
+    col3, col4 = st.columns(2)
+    with col3:
+        weight = st.number_input("Weight (kg)", min_value=0.0, value=0.0)
+
+    with col4:
+        quantity = st.number_input("Quantity", min_value=0, value=1)
+
+    size = st.text_input("Size (e.g. 32 or 50x70 cm)")
+
+    if st.button("Add Inventory"):
+        if item_name.strip() == "":
+            st.warning("Item name cannot be empty.")
+        else:
+            st.session_state.inventory.append({
+                "name": item_name,
+                "category": category if category != "None" else "",
+                "weight": weight,
+                "quantity": quantity,
+                "size": size,
+            })
+            st.success("Item added successfully!")
+
+    st.markdown("---")
+    st.subheader("📋 Inventory List")
+
+    if len(st.session_state.inventory) == 0:
+        st.info("No inventory added yet.")
+    else:
+        for i, item in enumerate(st.session_state.inventory):
+            with st.container():
+                colA, colB, colC, colD, colDel = st.columns([2, 2, 2, 2, 1])
+
+                colA.write(f"**{item['name']}**")
+                colB.write(item["category"] if item["category"] else "—")
+                colC.write(f"{item['weight']} kg")
+                colD.write(f"Qty: {item['quantity']}  |  Size: {item['size']}")
+
+                # Delete Button
+                if colDel.button("🗑️", key=f"del_{i}"):
+                    st.session_state.inventory.pop(i)
+                    st.experimental_rerun()
