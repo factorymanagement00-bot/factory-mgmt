@@ -179,15 +179,28 @@ elif page == "Planner":
         st.info("No jobs added yet.")
         st.stop()
 
+    # -----------------------------
+    # SORT JOBS BY DUE DATE
+    # -----------------------------
+    jobs_sorted = sorted(
+        st.session_state.jobs,
+        key=lambda x: datetime.strptime(x["due"], "%Y-%m-%d")
+    )
+
     start_time = datetime.strptime("09:00", "%H:%M")
     lunch_start = datetime.strptime("13:00", "%H:%M")
     lunch_end = datetime.strptime("14:00", "%H:%M")
 
     schedule = []
     cur_time = start_time
+    today = datetime.now().date()
 
-    for job in st.session_state.jobs:
+    for job in jobs_sorted:
+
+        job_due = datetime.strptime(job["due"], "%Y-%m-%d").date()
+
         for p in job["processes"]:
+
             hrs = p["hours"]
             end_time = cur_time + timedelta(hours=hrs)
 
@@ -195,8 +208,20 @@ elif page == "Planner":
             if cur_time < lunch_start < end_time:
                 end_time += (lunch_end - lunch_start)
 
+            # -----------------------------
+            # DUE DATE STATUS COLOR
+            # -----------------------------
+            if job_due < today:
+                due_status = "OVERDUE"
+            elif job_due == today or job_due == today + timedelta(days=1):
+                due_status = "NEAR DUE"
+            else:
+                due_status = "OK"
+
             schedule.append({
                 "Job": job["job"],
+                "Due Date": job["due"],
+                "Due Status": due_status,
                 "Process": p["name"],
                 "Machine": p["machine"],
                 "Workers": p["workers"],
@@ -209,7 +234,22 @@ elif page == "Planner":
             cur_time = end_time
 
     df = pd.DataFrame(schedule)
-    st.dataframe(df, use_container_width=True)
+
+    # -----------------------------
+    # ADD COLOR HIGHLIGHTING
+    # -----------------------------
+    def color_due(val):
+        if val == "OVERDUE":
+            return "background-color: #ff4d4d; color: white;"   # red
+        elif val == "NEAR DUE":
+            return "background-color: #ffcc00; color: black;"   # yellow
+        return ""
+
+    st.write("### 📊 Planned Schedule (with Due Date Alerts)")
+    st.dataframe(
+        df.style.applymap(color_due, subset=["Due Status"]),
+        use_container_width=True
+    )
 
 # ============================================================
 #                      STAFF SETTINGS
