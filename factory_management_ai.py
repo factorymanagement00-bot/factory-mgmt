@@ -1,363 +1,254 @@
 import streamlit as st
 from datetime import datetime, date, timedelta
 
-# -----------------------------
-# CONFIG – SUBSCRIPTION SYSTEM
-# -----------------------------
-PREMIUM_TOKENS = ["FACTORYPRO123", "PREMIUM999", "FM2025"]  # change/add your own tokens
+# -----------------------------------------------------
+# PAGE CONFIG
+# -----------------------------------------------------
+st.set_page_config(
+    page_title="Factory-Management.AI",
+    page_icon="🏭",
+    layout="wide",
+)
 
-MAX_JOBS_FREE = 5        # Free users can add up to 5 jobs
-MAX_INVENTORY_FREE = 10  # Free users can add up to 10 inventory items
+# -----------------------------------------------------
+# CUSTOM PREMIUM UI (GLASSMORPHISM)
+# -----------------------------------------------------
+st.markdown("""
+<style>
+
+body {
+    background: linear-gradient(145deg, #0f0f0f, #1a1a1a);
+    color: #e5e5e5;
+}
+
+.block-container {
+    padding-top: 2rem;
+}
+
+/* Glassmorphism Card */
+.glass-card {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 18px;
+    padding: 25px 30px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    margin-bottom: 25px;
+    transition: 0.25s ease;
+}
+.glass-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 12px 35px rgba(0, 0, 0, 0.55);
+}
+
+/* Header Glow */
+.header-title {
+    font-size: 52px;
+    font-weight: 700;
+    text-align: center;
+    background: linear-gradient(90deg, #ff7a7a, #e88cff, #6acbff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.header-sub {
+    text-align: center;
+    font-size: 18px;
+    color: #b5b5b5;
+    margin-top: -10px;
+}
+
+/* Buttons */
+div.stButton > button {
+    background: linear-gradient(90deg, #7b3eff, #4776e6);
+    color: white;
+    border-radius: 10px;
+    height: 48px;
+    border: none;
+    font-size: 16px;
+    transition: 0.2s ease;
+}
+div.stButton > button:hover {
+    background: linear-gradient(90deg, #9a63ff, #5b8bff);
+    transform: scale(1.02);
+}
+
+/* Tabs Style */
+.stTabs [role="tablist"] button {
+    background: rgba(255,255,255,0.08);
+    border-radius: 12px;
+    margin-right: 10px;
+    padding: 12px 16px;
+    font-size: 16px;
+}
+.stTabs [role="tablist"] button:hover {
+    background: rgba(255,255,255,0.18);
+}
+
+</style>
+""", unsafe_allow_html=True)
 
 
-def check_subscription(token: str) -> str:
-    """
-    Check if the token is premium or not.
-    Empty token = free plan.
-    Invalid token = free plan (with warning).
-    """
-    if not token.strip():
-        return "free"
-    if token.strip() in PREMIUM_TOKENS:
-        return "premium"
-    return "invalid"
-
-
-# -----------------------------
-# INITIALIZE SESSION STATE
-# -----------------------------
+# -----------------------------------------------------
+# STATE INIT
+# -----------------------------------------------------
 def init_state():
     if "staff" not in st.session_state:
-        st.session_state.staff = {
-            "staff_count": 5,
-            "hours_per_staff": 8
-        }
+        st.session_state.staff = {"count": 5, "hours": 8}
     if "inventory" not in st.session_state:
-        st.session_state.inventory = []  # list of dicts
+        st.session_state.inventory = []
     if "jobs" not in st.session_state:
-        st.session_state.jobs = []  # list of jobs
+        st.session_state.jobs = []
 
 
-# -----------------------------
-# SCHEDULER / "AI" PLANNER
-# -----------------------------
-def plan_today(jobs, staff_count: int, hours_per_staff: float):
-    """
-    Very simple planning logic:
-    - Total capacity = staff_count * hours_per_staff
-    - Sort jobs by due_date, then by name
-    - Go through each job and its processes in order
-    - Fill up today's capacity
-    """
-    if staff_count <= 0 or hours_per_staff <= 0:
-        return [], 0, 0
+# -----------------------------------------------------
+# AI WORKLOAD PLANNER
+# -----------------------------------------------------
+def plan_today(jobs, staff_count, hours_per_staff):
+    total_cap = staff_count * hours_per_staff
+    tasks = []
+    used = 0
 
-    total_capacity = staff_count * hours_per_staff
+    jobs_sorted = sorted(jobs, key=lambda x: (x["due"], x["name"]))
 
-    # Flatten processes with reference to job
-    # Each job: {id, name, due_date, quantity, processes:[{name, hours}]}
-    sorted_jobs = sorted(
-        jobs,
-        key=lambda j: (j["due_date"], j["name"])
-    )
-
-    today_tasks = []
-    used_hours = 0.0
-
-    for job in sorted_jobs:
-        for idx, process in enumerate(job["processes"], start=1):
-            duration = process["hours"]
-            if used_hours + duration <= total_capacity:
-                today_tasks.append({
-                    "job_name": job["name"],
-                    "job_id": job["id"],
-                    "due_date": job["due_date"],
-                    "process_name": process["name"],
-                    "process_index": idx,
-                    "duration_hours": duration
+    for job in jobs_sorted:
+        for p in job["processes"]:
+            if used + p["hours"] <= total_cap:
+                tasks.append({
+                    "Job": job["name"],
+                    "Process": p["name"],
+                    "Hours": p["hours"]
                 })
-                used_hours += duration
-            else:
-                # No more capacity
-                break
+                used += p["hours"]
 
-        if used_hours >= total_capacity:
-            break
-
-    return today_tasks, used_hours, total_capacity
+    return tasks, used, total_cap
 
 
-def add_time_slots_to_tasks(tasks, workday_start_hour=9):
-    """
-    Add start/end time slots to the tasks based on duration.
-    Workday starts at workday_start_hour.
-    """
-    if not tasks:
-        return tasks
-
-    today = date.today()
-    current_time = datetime(
-        year=today.year,
-        month=today.month,
-        day=today.day,
-        hour=workday_start_hour,
-        minute=0
-    )
-
-    for t in tasks:
-        start_time = current_time
-        end_time = start_time + timedelta(hours=t["duration_hours"])
-        t["start_time"] = start_time.strftime("%H:%M")
-        t["end_time"] = end_time.strftime("%H:%M")
-        current_time = end_time
-
-    return tasks
-
-
-# -----------------------------
-# UI SECTIONS
-# -----------------------------
-def staff_section(subscription_type: str):
-    st.subheader("👷 Staff & Workload Settings")
-    st.write("Set how many people are working and their daily working hours.")
+# -----------------------------------------------------
+# UI SECTIONS (PREMIUM DESIGN)
+# -----------------------------------------------------
+def staff_ui():
+    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+    st.subheader("👷 Staff & Workload")
 
     col1, col2 = st.columns(2)
 
     with col1:
-        staff_count = st.number_input(
-            "Number of Staff",
-            min_value=1,
-            max_value=500 if subscription_type == "premium" else 50,
-            value=st.session_state.staff["staff_count"],
-            step=1
-        )
+        count = st.number_input("Number of Staff", 1, 500, st.session_state.staff["count"])
     with col2:
-        hours_per_staff = st.number_input(
-            "Working Hours per Staff (per day)",
-            min_value=1.0,
-            max_value=24.0,
-            value=float(st.session_state.staff["hours_per_staff"]),
-            step=0.5
-        )
+        hours = st.number_input("Hours per Staff per Day", 1.0, 24.0, st.session_state.staff["hours"], step=0.5)
 
-    st.session_state.staff["staff_count"] = int(staff_count)
-    st.session_state.staff["hours_per_staff"] = float(hours_per_staff)
+    st.session_state.staff["count"] = count
+    st.session_state.staff["hours"] = hours
 
-    st.info(
-        f"Total daily capacity: **{staff_count * hours_per_staff:.1f} hours** "
-        f"({staff_count} staff × {hours_per_staff} hours)"
-    )
+    st.success(f"Daily Capacity: {count * hours} hours")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
-def inventory_section(subscription_type: str):
-    st.subheader("📦 Inventory Management")
+def inventory_ui():
+    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+    st.subheader("📦 Inventory")
 
-    inventory = st.session_state.inventory
-
-    if inventory:
-        st.table(inventory)
+    if st.session_state.inventory:
+        st.table(st.session_state.inventory)
     else:
-        st.write("No inventory items yet.")
+        st.info("No inventory added yet.")
 
-    st.markdown("---")
-    st.markdown("### ➕ Add Inventory Item")
+    st.markdown("### ➕ Add Item")
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        item_name = st.text_input("Item Name", key="inv_name")
+        item = st.text_input("Item Name")
     with col2:
-        stock = st.number_input("Current Stock", min_value=0, value=0, key="inv_stock")
+        stock = st.number_input("Stock", 0, 99999, 0)
     with col3:
-        reorder_level = st.number_input("Reorder Level", min_value=0, value=10, key="inv_reorder")
+        reorder = st.number_input("Reorder Level", 0, 99999, 10)
 
-    if st.button("Add Item"):
-        if subscription_type == "free" and len(inventory) >= MAX_INVENTORY_FREE:
-            st.error(f"Free plan limit reached: You can only add {MAX_INVENTORY_FREE} inventory items.")
-        elif not item_name.strip():
-            st.error("Please enter an item name.")
+    if st.button("Add Inventory Item"):
+        if item:
+            st.session_state.inventory.append({"Item": item, "Stock": stock, "Reorder Level": reorder})
+            st.success("Item added!")
         else:
-            inventory.append({
-                "item_name": item_name.strip(),
-                "stock": stock,
-                "reorder_level": reorder_level
-            })
-            st.session_state.inventory = inventory
-            st.success("Inventory item added.")
+            st.error("Item name is required.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
-def jobs_section(subscription_type: str):
-    st.subheader("🧾 Jobs & Processes")
+def jobs_ui():
+    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+    st.subheader("🧾 Job Management")
 
-    jobs = st.session_state.jobs
-
-    if jobs:
-        # Show a simple overview
-        st.write("**Current Jobs:**")
-        display_jobs = []
-        for j in jobs:
-            display_jobs.append({
-                "ID": j["id"],
-                "Name": j["name"],
-                "Due Date": j["due_date"].isoformat(),
-                "Quantity": j["quantity"],
-                "Processes": len(j["processes"]),
-                "Hours Total": sum(p["hours"] for p in j["processes"])
-            })
-        st.table(display_jobs)
+    if st.session_state.jobs:
+        st.table([
+            {"Job": j["name"], "Due": j["due"].isoformat(), "Processes": len(j["processes"])}
+            for j in st.session_state.jobs
+        ])
     else:
-        st.write("No jobs added yet.")
+        st.info("No jobs added yet.")
 
-    st.markdown("---")
-    st.markdown("### ➕ Add New Job")
+    st.markdown("### ➕ Add Job")
 
     col1, col2 = st.columns(2)
     with col1:
-        job_name = st.text_input("Job Name", key="job_name")
-        quantity = st.number_input("Quantity", min_value=1, value=100, step=1, key="job_qty")
+        name = st.text_input("Job Name")
+        qty = st.number_input("Quantity", 1, 99999, 100)
     with col2:
-        due_date = st.date_input("Due Date", value=date.today(), key="job_due")
+        due = st.date_input("Due Date", date.today())
 
-    col3, col4 = st.columns(2)
-    with col3:
-        num_processes = st.number_input(
-            "Number of Processes",
-            min_value=1,
-            max_value=20 if subscription_type == "premium" else 5,
-            value=5,
-            step=1,
-            key="job_proc"
-        )
-    with col4:
-        base_hours = st.slider(
-            "Estimated Hours per Process (2–5 hours typical)",
-            min_value=1.0,
-            max_value=8.0,
-            value=3.0,
-            step=0.5,
-            key="job_base_hours"
-        )
-
-    st.caption("You can think of base hours as average time per process (you said usually 2–5 hours).")
+    process_count = st.slider("Processes", 1, 10, 5)
+    hrs = st.slider("Hours per Process", 1.0, 6.0, 3.0)
 
     if st.button("Add Job"):
-        if subscription_type == "free" and len(jobs) >= MAX_JOBS_FREE:
-            st.error(f"Free plan limit reached: You can only add {MAX_JOBS_FREE} jobs.")
-        elif not job_name.strip():
-            st.error("Please enter a job name.")
+        if name:
+            st.session_state.jobs.append({
+                "name": name,
+                "qty": qty,
+                "due": due,
+                "processes": [{"name": f"Process {i+1}", "hours": hrs} for i in range(process_count)]
+            })
+            st.success("Job added!")
         else:
-            # Simple logic: total hours per process = base_hours
-            processes = []
-            for i in range(int(num_processes)):
-                processes.append({
-                    "name": f"Process {i+1}",
-                    "hours": float(base_hours)
-                })
+            st.error("Job name required.")
 
-            new_job = {
-                "id": f"JOB-{len(jobs)+1}",
-                "name": job_name.strip(),
-                "due_date": due_date,
-                "quantity": int(quantity),
-                "processes": processes
-            }
-            jobs.append(new_job)
-            st.session_state.jobs = jobs
-            st.success(f"Job '{job_name}' added with {num_processes} processes.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
-def planning_section(subscription_type: str):
-    st.subheader("📅 AI Planning: What Should Be Done Today?")
+def planning_ui():
+    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+    st.subheader("📅 AI Workload Planning")
 
-    jobs = st.session_state.jobs
-    staff_count = st.session_state.staff["staff_count"]
-    hours_per_staff = st.session_state.staff["hours_per_staff"]
-
-    if not jobs:
-        st.warning("No jobs available. Add some jobs in the 'Jobs & Processes' section.")
-        return
-
-    if st.button("Generate Today's Plan"):
-        tasks, used_hours, total_capacity = plan_today(jobs, staff_count, hours_per_staff)
-        tasks = add_time_slots_to_tasks(tasks)
+    if st.button("Generate Plan"):
+        tasks, used, total = plan_today(
+            st.session_state.jobs,
+            st.session_state.staff["count"],
+            st.session_state.staff["hours"]
+        )
 
         if not tasks:
-            st.info("No tasks scheduled for today (maybe capacity is zero or jobs are empty).")
-            return
+            st.warning("No tasks can be scheduled today.")
+        else:
+            st.success(f"Planned {len(tasks)} tasks • Used {used}/{total} hrs")
+            st.table(tasks)
 
-        st.success(
-            f"Planned **{len(tasks)} processes** for today using **{used_hours:.1f}/{total_capacity:.1f} hours** "
-            f"of capacity."
-        )
-
-        # Show tasks in a table
-        display_tasks = []
-        for t in tasks:
-            display_tasks.append({
-                "Job": t["job_name"],
-                "Process": t["process_name"],
-                "Duration (hrs)": t["duration_hours"],
-                "Start": t["start_time"],
-                "End": t["end_time"],
-                "Due Date": t["due_date"].isoformat()
-            })
-
-        st.table(display_tasks)
-
-        # Simple natural language summary
-        st.markdown("### 🧠 AI Summary (Simple Logic)")
-        top_jobs = sorted(
-            {t["Job"] for t in display_tasks},
-            key=lambda name: name
-        )
-        st.write(
-            f"Today, the system prioritized jobs with the earliest due dates and filled up your available "
-            f"capacity of **{total_capacity:.1f} hours**. It scheduled processes from these jobs: "
-            f"**{', '.join(top_jobs)}**."
-        )
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
-# -----------------------------
+# -----------------------------------------------------
 # MAIN APP
-# -----------------------------
+# -----------------------------------------------------
 def main():
-    st.set_page_config(page_title="Factory-Management.AI", layout="wide")
     init_state()
 
-    st.title("🏭 Factory-Management.AI")
-    st.write("Smart helper to manage your **inventory, staff, and daily workload**.")
+    st.markdown("<h1 class='header-title'>🏭 Factory-Management.AI</h1>", unsafe_allow_html=True)
+    st.markdown("<p class='header-sub'>A premium AI dashboard to manage workforce, inventory & factory workload.</p>", unsafe_allow_html=True)
 
-    # Subscription bar
-    st.markdown("### 💳 Subscription")
-    token = st.text_input("Enter Subscription Token (leave empty for FREE plan):", type="password")
-    sub_status = check_subscription(token)
+    tab1, tab2, tab3, tab4 = st.tabs(["👷 Staff", "📦 Inventory", "🧾 Jobs", "📅 Planner"])
 
-    if sub_status == "invalid":
-        subscription_type = "free"
-        st.error("Invalid token. You are on the FREE plan with limited features.")
-    elif sub_status == "premium":
-        subscription_type = "premium"
-        st.success("✅ Premium plan active! All features unlocked.")
-    else:
-        subscription_type = "free"
-        st.warning("You are on the FREE plan. Some limits apply.")
-
-    st.markdown("---")
-
-    # Tabs for sections
-    tab1, tab2, tab3, tab4 = st.tabs(["👷 Staff", "📦 Inventory", "🧾 Jobs", "📅 Today's Plan"])
-
-    with tab1:
-        staff_section(subscription_type)
-
-    with tab2:
-        inventory_section(subscription_type)
-
-    with tab3:
-        jobs_section(subscription_type)
-
-    with tab4:
-        planning_section(subscription_type)
+    with tab1: staff_ui()
+    with tab2: inventory_ui()
+    with tab3: jobs_ui()
+    with tab4: planning_ui()
 
 
-if __name__ == "__main__":
-    main()
+main()
