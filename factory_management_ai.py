@@ -264,6 +264,7 @@ def jobs_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("🧾 Add Job")
 
+    # ---------- JOB BASIC INFO ----------
     col1, col2 = st.columns(2)
 
     with col1:
@@ -278,19 +279,102 @@ def jobs_ui():
     st.markdown("### 📝 Process Details")
     processes = []
 
+    inventory = st.session_state.inventory
+    categories = st.session_state.categories
+
+    if not inventory or not categories:
+        st.info("Tip: Add some inventory items and categories first so you can link materials to processes.")
+
+    # ---------- PROCESS LOOP ----------
     for i in range(num_proc):
+        st.markdown(f"#### Process {i+1}")
+
+        # Row 1: name + hours
         colA, colB = st.columns([3, 1.2])
         with colA:
             pname = st.text_input(f"Process {i+1} Name", key=f"pname_{i}")
         with colB:
-            phours = st.number_input("Hours", 0.5, 24.0, 3.0, step=0.5, key=f"phours_{i}")
-        processes.append({"name": pname, "hours": float(phours)})
+            phours = st.number_input(
+                "Hours",
+                0.5, 24.0,
+                3.0,
+                step=0.5,
+                key=f"phours_{i}"
+            )
 
+        # Row 2: material link (category -> item -> size)
+        colC, colD, colE = st.columns([2, 2, 1.5])
+
+        # CATEGORY
+        with colC:
+            if categories:
+                p_cat = st.selectbox(
+                    "Category",
+                    options=categories,
+                    key=f"pcat_{i}"
+                )
+            else:
+                p_cat = ""
+                st.write("No categories")
+
+        # INVENTORY ITEM (filtered by category)
+        with colD:
+            if p_cat:
+                items_for_cat = sorted(
+                    {item["Item"] for item in inventory if item["Category"] == p_cat}
+                )
+            else:
+                items_for_cat = []
+
+            if items_for_cat:
+                p_item = st.selectbox(
+                    "Inventory Item",
+                    options=items_for_cat,
+                    key=f"pitem_{i}"
+                )
+            else:
+                p_item = ""
+                st.write("No items for this category")
+
+        # SIZE (filtered by item + category)
+        with colE:
+            if p_cat and p_item:
+                sizes_for_item = sorted(
+                    {str(item["Size"]) for item in inventory
+                     if item["Category"] == p_cat and item["Item"] == p_item}
+                )
+            else:
+                sizes_for_item = []
+
+            if sizes_for_item:
+                p_size = st.selectbox(
+                    "Size",
+                    options=sizes_for_item,
+                    key=f"psize_{i}"
+                )
+            else:
+                p_size = ""
+                st.write("No size")
+
+        processes.append({
+            "name": pname,
+            "hours": float(phours),
+            "material_category": p_cat,
+            "material_item": p_item,
+            "material_size": p_size,
+        })
+
+        st.markdown("---")
+
+    # ---------- ADD JOB BUTTON ----------
     if st.button("Add Job"):
         if not job_name.strip():
             st.error("Job name required.")
         elif any(p["name"].strip() == "" for p in processes):
-            st.error("All process names required.")
+            st.error("All process names are required.")
+        elif any((p["material_category"] == "" or p["material_item"] == "" or p["material_size"] == "")
+                 for p in processes):
+            st.error("Please select category, inventory item and size for every process.")
         else:
             st.session_state.jobs.append({
                 "name": job_name,
@@ -303,7 +387,7 @@ def jobs_ui():
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---------------- JOBS LIST AT BOTTOM ----------------
+    # ---------- JOB LIST AT BOTTOM ----------
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("📋 Existing Jobs")
 
@@ -317,9 +401,11 @@ def jobs_ui():
             st.write(f"**Quantity:** {job['qty']}")
             st.write("### Processes:")
             for p in job["processes"]:
-                st.write(f"- {p['name']} — {p['hours']} hrs")
+                mat = f"{p['material_category']} / {p['material_item']} / {p['material_size']}" \
+                    if p['material_category'] else "No material linked"
+                st.write(f"- {p['name']} — {p['hours']} hrs  |  Material: {mat}")
 
-            if st.button(f"🗑 Delete Job '{job['name']}'", key=f"del{idx}"):
+            if st.button(f"🗑 Delete Job '{job['name']}'", key=f"del_job_{idx}"):
                 st.session_state.jobs.pop(idx)
                 st.success("Job deleted.")
                 st.rerun()
