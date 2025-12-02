@@ -217,42 +217,11 @@ def jobs_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("🧾 Jobs & Processes")
 
-    # ------------------------------
-    # SHOW EXISTING JOBS (DETAILED)
-    # ------------------------------
-    if st.session_state.jobs:
-        st.markdown("### 📋 Existing Jobs")
-
-        # Loop through jobs with index
-        for idx, job in enumerate(st.session_state.jobs):
-
-            with st.expander(f"📦 {job['name']} — Due: {job['due'].isoformat()}"):
-
-                st.write(f"**Quantity:** {job['qty']} units")
-                st.write("### 🛠 Processes:")
-
-                for p in job["processes"]:
-                    st.write(f"- **{p['name']}** — {p['hours']} hrs")
-
-                st.markdown("---")
-
-                # DELETE BUTTON
-                delete_button = st.button(
-                    f"🗑 Delete Job '{job['name']}'",
-                    key=f"delete_job_{idx}"
-                )
-
-                if delete_button:
-                    st.session_state.jobs.pop(idx)
-                    st.success(f"Deleted job: {job['name']}")
-                    st.experimental_rerun()
-
-    else:
-        st.info("No jobs added yet.")
-
-    st.markdown("---")
     st.markdown("### ➕ Add Job")
 
+    # ------------------------------
+    # JOB INPUT SECTION
+    # ------------------------------
     col1, col2 = st.columns(2)
 
     with col1:
@@ -285,7 +254,9 @@ def jobs_ui():
 
         process_list.append({"name": p_name, "hours": float(p_hours)})
 
-    # Add job
+    # ------------------------------
+    # ADD JOB BUTTON
+    # ------------------------------
     if st.button("Add Job"):
         if not job_name.strip():
             st.error("Job name is required.")
@@ -299,6 +270,34 @@ def jobs_ui():
                 "processes": process_list
             })
             st.success("Job added successfully!")
+            st.experimental_rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # ------------------------------------------------
+    # SHOW JOBS AT THE BOTTOM (AFTER ADD JOB FORM)
+    # ------------------------------------------------
+    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+    st.subheader("📋 Existing Jobs (Bottom View)")
+
+    if st.session_state.jobs:
+        for idx, job in enumerate(st.session_state.jobs):
+            with st.expander(f"📦 {job['name']} — Due: {job['due'].isoformat()}"):
+                
+                st.write(f"**Quantity:** {job['qty']} units")
+                st.write("### 🛠 Processes:")
+                for p in job["processes"]:
+                    st.write(f"- **{p['name']}** — {p['hours']} hrs")
+
+                st.markdown("---")
+
+                # DELETE BUTTON
+                if st.button(f"🗑 Delete Job '{job['name']}'", key=f"delete_job_{idx}"):
+                    st.session_state.jobs.pop(idx)
+                    st.success(f"Deleted job: {job['name']}")
+                    st.experimental_rerun()
+    else:
+        st.info("No jobs added yet.")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
