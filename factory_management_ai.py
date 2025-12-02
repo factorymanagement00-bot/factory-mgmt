@@ -169,29 +169,42 @@ def inventory_ui():
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("📦 Inventory")
 
+    st.markdown("### ➕ Add Inventory Item")
+
+    # FORM for adding inventory
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        name = st.text_input("Item Name")
+
+    with col2:
+        weight = st.number_input("Weight (kg)", min_value=0.0, max_value=100000.0, value=0.0, step=0.1)
+
+    with col3:
+        qty = st.number_input("Quantity", min_value=0, max_value=100000, value=0, step=1)
+
+    if st.button("Add Inventory Item"):
+        if name.strip():
+            st.session_state.inventory.append({
+                "Item": name,
+                "Weight (kg)": weight,
+                "Quantity": qty,
+            })
+            st.success("Inventory item added!")
+        else:
+            st.error("Item name cannot be empty.")
+
+    st.markdown("---")
+    st.markdown("### 📋 Current Inventory")
+
+    # SHOW INVENTORY LIST AT BOTTOM
     if st.session_state.inventory:
         st.table(st.session_state.inventory)
     else:
-        st.info("No inventory added yet.")
-
-    st.markdown("### ➕ Add Inventory Item")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        name = st.text_input("Item Name")
-    with col2:
-        stock = st.number_input("Stock", 0, 100000, 0)
-    with col3:
-        reorder = st.number_input("Reorder Level", 0, 100000, 10)
-
-    if st.button("Add Inventory Item"):
-        if name:
-            st.session_state.inventory.append({"Item": name, "Stock": stock, "Reorder Level": reorder})
-            st.success("Item added!")
-        else:
-            st.error("Item name is required.")
+        st.info("No inventory items added yet.")
 
     st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 # -----------------------------------------------------
