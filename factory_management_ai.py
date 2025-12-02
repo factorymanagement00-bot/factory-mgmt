@@ -1,161 +1,160 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
+# ============================================================
+# PAGE CONFIG
+# ============================================================
 st.set_page_config(
     page_title="Factory Management AI",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ----------------------
-# DARK NEON UI CSS
-# ----------------------
+# ============================================================
+# DARK PREMIUM UI
+# ============================================================
 st.markdown("""
 <style>
-body, .stApp {
-    background-color: #0d0f16 !important;
-    color: white !important;
+body, .stApp { background-color: #0d0f16 !important; color: white !important; }
+
+h1, h2, h3, h4 {
+    color: #b27cff !important;
+    font-weight: 600;
 }
-h1, h2, h3, h4 { color: #b27cff !important; }
+
 .stButton>button {
     background: linear-gradient(90deg,#7928ca,#ff0080);
-    color: white; border: none; padding: 10px 20px;
-    border-radius: 10px; font-size: 16px;
+    color: white; border: none;
+    padding: 10px 22px; border-radius: 8px;
+}
+
+.dataframe td, .dataframe th {
+    color: white !important;
+    background-color: #1a1d29 !important;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ----------------------
-# SESSION STATE
-# ----------------------
+# ============================================================
+# SESSION STATE SETUP
+# ============================================================
 if "inventory" not in st.session_state: st.session_state.inventory = []
 if "categories" not in st.session_state: st.session_state.categories = []
 if "jobs" not in st.session_state: st.session_state.jobs = []
+if "task_done" not in st.session_state: st.session_state.task_done = {}
 if "staff_count" not in st.session_state: st.session_state.staff_count = 5
 if "work_hours" not in st.session_state: st.session_state.work_hours = 8
 
-# ----------------------
-# SIDEBAR
-# ----------------------
+
+# ============================================================
+# SIDEBAR NAVIGATION
+# ============================================================
 st.sidebar.title("⚙️ Factory Management AI")
 page = st.sidebar.radio("Navigate", ["Inventory", "Jobs", "Planner", "Staff Settings"])
 
+
 # ============================================================
-#                    INVENTORY PAGE
+# INVENTORY PAGE
 # ============================================================
 if page == "Inventory":
 
     st.title("📦 Inventory Management")
 
+    # Add Category
     st.subheader("➕ Add Category")
-    new_category = st.text_input("New Category Name")
+    new_cat = st.text_input("New Category Name")
 
     if st.button("Add Category"):
-        if new_category.strip() != "" and new_category not in st.session_state.categories:
-            st.session_state.categories.append(new_category)
+        if new_cat.strip() and new_cat not in st.session_state.categories:
+            st.session_state.categories.append(new_cat)
             st.success("Category added!")
         else:
-            st.warning("Invalid or duplicate category.")
+            st.warning("Invalid or duplicate category")
 
     st.markdown("---")
 
+    # Add Inventory Item
     st.subheader("➕ Add Inventory Item")
+    name = st.text_input("Item Name")
+    cat = st.selectbox("Category", ["None"] + st.session_state.categories)
     col1, col2 = st.columns(2)
-    with col1: item_name = st.text_input("Item Name")
+    with col1:
+        qty = st.number_input("Quantity", min_value=0, value=1)
     with col2:
-        category = st.selectbox("Category", ["None"] + st.session_state.categories)
+        weight = st.number_input("Weight (kg)", min_value=0.0, value=0.0)
 
-    col3, col4 = st.columns(2)
-    with col3: weight = st.number_input("Weight (kg)", min_value=0.0, value=0.0)
-    with col4: qty = st.number_input("Quantity", min_value=0, value=1)
+    size = st.text_input("Size")
 
-    size = st.text_input("Size (e.g. 32, 50x70 cm)")
-
-    if st.button("Add Inventory"):
-        if item_name.strip() == "":
-            st.warning("Item name required!")
-        else:
-            st.session_state.inventory.append({
-                "name": item_name,
-                "category": category if category != "None" else "",
-                "weight": weight,
-                "quantity": qty,
-                "size": size
-            })
-            st.success("Item added!")
+    if st.button("Add Item"):
+        st.session_state.inventory.append({
+            "name": name,
+            "category": cat if cat != "None" else "",
+            "quantity": qty,
+            "weight": weight,
+            "size": size
+        })
+        st.success("Item Added!")
 
     st.markdown("---")
     st.subheader("📋 Inventory List")
 
-    for i, it in enumerate(st.session_state.inventory):
+    for i, item in enumerate(st.session_state.inventory):
         colA, colB, colC, colD, colDel = st.columns([2,2,2,2,1])
-        colA.write(f"**{it['name']}**")
-        colB.write(it["category"] if it["category"] else "—")
-        colC.write(f"{it['weight']} kg")
-        colD.write(f"Qty: {it['quantity']} | Size: {it['size']}")
-
-        if colDel.button("🗑️", key=f"inv_{i}"):
+        colA.write(f"**{item['name']}**")
+        colB.write(item["category"] or "—")
+        colC.write(f"Qty: {item['quantity']}")
+        colD.write(f"Size: {item['size']}")
+        if colDel.button("🗑️", key=f"del_{i}"):
             st.session_state.inventory.pop(i)
             st.experimental_rerun()
 
+
 # ============================================================
-#                         JOBS PAGE
+# JOBS PAGE
 # ============================================================
 elif page == "Jobs":
 
-    st.title("📝 Add Job")
+    st.title("📝 Jobs")
 
     job_name = st.text_input("Job Name")
     due_date = st.date_input("Due Date")
 
-    num_process = st.slider("Number of Processes", 1, 10, 1)
+    num_proc = st.slider("Number of Processes", 1, 20, 1)
 
     processes = []
     st.markdown("---")
 
-    for p in range(num_process):
+    for i in range(num_proc):
+        st.subheader(f"Process {i+1}")
 
-        st.subheader(f"Process {p+1}")
+        pname = st.text_input(f"Process Name {i+1}", key=f"pname{i}")
+        hours = st.number_input(f"Hours", min_value=0.5, value=1.0, step=0.5, key=f"phours{i}")
+        workers = st.number_input(f"Workers", min_value=1, value=1, key=f"pworkers{i}")
+        machine = st.text_input(f"Machine (optional)", key=f"pmachine{i}")
 
-        pname = st.text_input(f"Process Name {p+1}", key=f"pn{p}")
-        hours = st.number_input(f"Hours for Process {p+1}", min_value=0.0, value=1.0, key=f"ph{p}")
+        cat = st.selectbox(f"Category (optional)", ["None"] + st.session_state.categories, key=f"pcat{i}")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            p_cat = st.selectbox(
-                f"Category (optional) {p+1}",
-                ["None"] + st.session_state.categories,
-                key=f"pcat{p}"
-            )
-        with col2:
-            # Filter items by category
-            items = ["None"]
-            if p_cat != "None":
-                items += [i["name"] for i in st.session_state.inventory if i["category"] == p_cat]
-            p_item = st.selectbox(f"Inventory Item {p+1}", items, key=f"pit{p}")
+        item = None
+        size = None
 
-        # Size auto loaded
-        size_options = ["None"]
-        if p_item != "None":
-            for inv in st.session_state.inventory:
-                if inv["name"] == p_item:
-                    size_options.append(inv["size"])
-                    break
+        if cat != "None":
+            items = ["None"] + [inv["name"] for inv in st.session_state.inventory if inv["category"] == cat]
+            item = st.selectbox(f"Inventory Item", items, key=f"pitem{i}")
+            if item == "None": item = None
 
-        p_size = st.selectbox(f"Size (optional) {p+1}", size_options, key=f"psz{p}")
-
-        machine = st.text_input(f"Machine (optional) {p+1}", key=f"pmac{p}")
-        workers = st.number_input(f"Workers for this process {p+1}", min_value=1, value=1, key=f"pwor{p}")
+            sizes = ["None"] + [inv["size"] for inv in st.session_state.inventory if inv["category"] == cat]
+            size = st.selectbox(f"Size", sizes, key=f"psize{i}")
+            if size == "None": size = None
 
         processes.append({
             "name": pname,
-            "hours": hours,
-            "category": p_cat,
-            "item": p_item,
-            "size": p_size,
+            "hours": float(hours),
+            "workers": int(workers),
             "machine": machine,
-            "workers": workers
+            "category": cat if cat != "None" else None,
+            "item": item,
+            "size": size
         })
 
         st.markdown("---")
@@ -166,238 +165,182 @@ elif page == "Jobs":
             "due": str(due_date),
             "processes": processes
         })
-        st.success("Job saved successfully!")
-def build_smart_schedule(jobs, task_done_state):
-    """
-    Build a schedule that:
-    - sorts jobs by due date
-    - batches same process names for close-due jobs
-    - skips processes marked as done in task_done_state
-    """
+        st.success("Job Saved!")
 
-    start_time = datetime.strptime("09:00", "%H:%M")
+
+# ============================================================
+# SMART BATCHING PLANNER ENGINE
+# ============================================================
+def smart_batch_schedule(jobs, done_map):
+
+    start = datetime.strptime("09:00", "%H:%M")
     lunch_start = datetime.strptime("13:00", "%H:%M")
     lunch_end = datetime.strptime("14:00", "%H:%M")
 
-    # Build flat list of all remaining processes
-    all_tasks = []
+    today = date.today()
+
+    # flatten tasks
+    tasks = []
     for j_idx, job in enumerate(jobs):
+        due = datetime.strptime(job["due"], "%Y-%m-%d").date()
+
         for p_idx, p in enumerate(job["processes"]):
-            task_id = f"{j_idx}_{p_idx}"
-            # skip if already marked done
-            if task_done_state.get(task_id, False):
-                continue
+            t_id = f"{j_idx}_{p_idx}"
+            if done_map.get(t_id, False):
+                continue  # skip done tasks
 
-            # parse due date (stored as string "YYYY-MM-DD")
-            try:
-                due_dt = datetime.strptime(job["due"], "%Y-%m-%d").date()
-            except Exception:
-                # if stored differently, just ignore parsing
-                due_dt = datetime.today().date()
-
-            all_tasks.append({
-                "task_id": task_id,
-                "job_name": job["job"],
-                "due": due_dt,
+            tasks.append({
+                "task_id": t_id,
+                "job": job["job"],
+                "due": due,
                 "due_str": job["due"],
-                "process_name": p["name"],
-                "hours": float(p["hours"]),
+                "name": p["name"],
+                "hours": p["hours"],
                 "workers": p["workers"],
-                "machine": p.get("machine", None),
+                "machine": p["machine"]
             })
 
     # sort by due date first
-    all_tasks.sort(key=lambda t: t["due"])
+    tasks.sort(key=lambda x: x["due"])
 
-    schedule = []
-    cur_time = start_time
-    today = datetime.today().date()
+    timeline = []
+    cur = start
 
-    scheduled_ids = set()
+    used = set()
 
-    i = 0
-    n = len(all_tasks)
-
-    while i < n:
-        if all_tasks[i]["task_id"] in scheduled_ids:
-            i += 1
+    for i, t in enumerate(tasks):
+        if t["task_id"] in used:
             continue
 
-        base = all_tasks[i]
-        base_id = base["task_id"]
-        base_name = base["process_name"].strip().lower()
-        base_due = base["due"]
+        # schedule this task
+        hrs = t["hours"]
+        start_t = cur
+        end_t = cur + timedelta(hours=hrs)
 
-        # schedule this base process
-        hrs = base["hours"]
-        start = cur_time
+        if start_t < lunch_start < end_t:
+            end_t += (lunch_end - lunch_start)
 
-        # handle lunch break
-        end = start + timedelta(hours=hrs)
-        if start < lunch_start < end:
-            end += (lunch_end - lunch_start)
-
-        # due status: for visual info
-        if base_due < today:
+        # due status
+        if t["due"] < today:
             due_status = "OVERDUE"
-        elif base_due <= today + timedelta(days=1):
+        elif t["due"] <= today + timedelta(days=1):
             due_status = "NEAR DUE"
         else:
             due_status = "OK"
 
-        schedule.append({
-            "task_id": base_id,
-            "Job": base["job_name"],
-            "Due Date": base["due_str"],
+        timeline.append({
+            "task_id": t["task_id"],
+            "Job": t["job"],
+            "Due Date": t["due_str"],
             "Due Status": due_status,
-            "Process": base["process_name"],
-            "Machine": base["machine"],
-            "Workers": base["workers"],
-            "Hours": base["hours"],
-            "Start": start.strftime("%I:%M %p"),
-            "End": end.strftime("%I:%M %p"),
+            "Process": t["name"],
+            "Machine": t["machine"],
+            "Workers": t["workers"],
+            "Hours": t["hours"],
+            "Start": start_t.strftime("%I:%M %p"),
+            "End": end_t.strftime("%I:%M %p"),
             "Status": "SCHEDULED"
         })
 
-        scheduled_ids.add(base_id)
-        cur_time = end
+        used.add(t["task_id"])
+        cur = end_t
 
-        # now try to batch other tasks with same process name & close due date
-        for j in range(i + 1, n):
-            t = all_tasks[j]
-            if t["task_id"] in scheduled_ids:
+        # BATCH SAME PROCESS NAME FOR NEAR-DUE JOBS
+        for j in range(i+1, len(tasks)):
+            x = tasks[j]
+
+            if x["task_id"] in used:
                 continue
 
             # same process name?
-            if t["process_name"].strip().lower() != base_name:
+            if x["name"].strip().lower() != t["name"].strip().lower():
                 continue
 
-            # due date "close" (|Δdays| <= 2, you can tweak)
-            if abs((t["due"] - base_due).days) > 2:
+            # due dates close?
+            if abs((x["due"] - t["due"]).days) > 2:
                 continue
 
-            hrs2 = t["hours"]
-            start2 = cur_time
+            hrs2 = x["hours"]
+            start2 = cur
             end2 = start2 + timedelta(hours=hrs2)
+
             if start2 < lunch_start < end2:
                 end2 += (lunch_end - lunch_start)
 
-            if t["due"] < today:
+            if x["due"] < today:
                 due_status2 = "OVERDUE"
-            elif t["due"] <= today + timedelta(days=1):
+            elif x["due"] <= today + timedelta(days=1):
                 due_status2 = "NEAR DUE"
             else:
                 due_status2 = "OK"
 
-            schedule.append({
-                "task_id": t["task_id"],
-                "Job": t["job_name"],
-                "Due Date": t["due_str"],
+            timeline.append({
+                "task_id": x["task_id"],
+                "Job": x["job"],
+                "Due Date": x["due_str"],
                 "Due Status": due_status2,
-                "Process": t["process_name"],
-                "Machine": t["machine"],
-                "Workers": t["workers"],
-                "Hours": t["hours"],
+                "Process": x["name"],
+                "Machine": x["machine"],
+                "Workers": x["workers"],
+                "Hours": x["hours"],
                 "Start": start2.strftime("%I:%M %p"),
                 "End": end2.strftime("%I:%M %p"),
                 "Status": "SCHEDULED"
             })
 
-            scheduled_ids.add(t["task_id"])
-            cur_time = end2
+            used.add(x["task_id"])
+            cur = end2
 
-        i += 1
+    return timeline
 
-    return schedule
 
 # ============================================================
-#                        PLANNER PAGE
+# PLANNER PAGE
 # ============================================================
 elif page == "Planner":
 
-    st.title("📅 AI Daily Planner")
+    st.title("🧠 AI Smart Planner (Batching + Done/Remaining)")
 
     if len(st.session_state.jobs) == 0:
-        st.info("No jobs added yet.")
+        st.info("No jobs yet.")
         st.stop()
 
-    # -----------------------------
-    # SORT JOBS BY DUE DATE
-    # -----------------------------
-    jobs_sorted = sorted(
-        st.session_state.jobs,
-        key=lambda x: datetime.strptime(x["due"], "%Y-%m-%d")
-    )
+    # Build schedule
+    schedule = smart_batch_schedule(st.session_state.jobs, st.session_state.task_done)
 
-    start_time = datetime.strptime("09:00", "%H:%M")
-    lunch_start = datetime.strptime("13:00", "%H:%M")
-    lunch_end = datetime.strptime("14:00", "%H:%M")
-
-    schedule = []
-    cur_time = start_time
-    today = datetime.now().date()
-
-    for job in jobs_sorted:
-
-        job_due = datetime.strptime(job["due"], "%Y-%m-%d").date()
-
-        for p in job["processes"]:
-
-            hrs = p["hours"]
-            end_time = cur_time + timedelta(hours=hrs)
-
-            # apply lunch break
-            if cur_time < lunch_start < end_time:
-                end_time += (lunch_end - lunch_start)
-
-            # -----------------------------
-            # DUE DATE STATUS COLOR
-            # -----------------------------
-            if job_due < today:
-                due_status = "OVERDUE"
-            elif job_due == today or job_due == today + timedelta(days=1):
-                due_status = "NEAR DUE"
-            else:
-                due_status = "OK"
-
-            schedule.append({
-                "Job": job["job"],
-                "Due Date": job["due"],
-                "Due Status": due_status,
-                "Process": p["name"],
-                "Machine": p["machine"],
-                "Workers": p["workers"],
-                "Hours": hrs,
-                "Start": cur_time.strftime("%I:%M %p"),
-                "End": end_time.strftime("%I:%M %p"),
-                "Status": "SCHEDULED"
-            })
-
-            cur_time = end_time
+    if not schedule:
+        st.success("🎉 All processes completed!")
+        st.stop()
 
     df = pd.DataFrame(schedule)
 
-    # -----------------------------
-    # ADD COLOR HIGHLIGHTING
-    # -----------------------------
-    def color_due(val):
-        if val == "OVERDUE":
-            return "background-color: #ff4d4d; color: white;"   # red
-        elif val == "NEAR DUE":
-            return "background-color: #ffcc00; color: black;"   # yellow
-        return ""
+    st.subheader("📅 Today's Schedule")
+    st.dataframe(df, use_container_width=True)
 
-    st.write("### 📊 Planned Schedule (with Due Date Alerts)")
-    st.dataframe(
-        df.style.applymap(color_due, subset=["Due Status"]),
-        use_container_width=True
-    )
+    st.markdown("---")
+    st.subheader("✔ Mark Processes as Done")
+
+    for row in schedule:
+        tid = row["task_id"]
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.write(
+                f"**{row['Job']}** | {row['Process']} | "
+                f"{row['Start']} - {row['End']} | Due: {row['Due Date']} ({row['Due Status']})"
+            )
+        with col2:
+            done_now = st.checkbox("Done", value=st.session_state.task_done.get(tid, False), key=f"chk{tid}")
+            st.session_state.task_done[tid] = done_now
+
+    st.info("Refresh the page after marking Done to rebuild the plan.")
+
 
 # ============================================================
-#                      STAFF SETTINGS
+# STAFF SETTINGS PAGE
 # ============================================================
 elif page == "Staff Settings":
-    st.title("👥 Staff Settings")
+
+    st.title("👷 Staff Settings")
 
     st.session_state.staff_count = st.number_input("Total Staff", min_value=1, value=st.session_state.staff_count)
     st.session_state.work_hours = st.number_input("Work Hours per Day", min_value=1, value=st.session_state.work_hours)
