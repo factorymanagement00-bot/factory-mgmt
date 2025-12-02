@@ -21,8 +21,8 @@ st.set_page_config(page_title="Factory Management AI", layout="wide")
 # ============================================================
 # OPENAI CLIENT (USING st.secrets)
 # ============================================================
-OPENAI_KEY = st.secrets.get("OPENAI_API_KEY", None)
-client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
+GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", "AIzaSyDDJeCs0a3eBQ9EX5WIEScvH7yE6neKqEk")
+client = google(api_key=GOOGLE_API_KEY) if GOOGLE_API_KEY else None
 
 # ============================================================
 # FIREBASE INIT (USING JSON FILE IN REPO)
