@@ -1,4 +1,0 @@
-google-generativeai
-streamlit
-pandas
-firebase-admin
