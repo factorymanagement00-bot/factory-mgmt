@@ -9,40 +9,34 @@ st.set_page_config(page_title="Factory Manager Pro", layout="wide")
 # CONFIG: FIREBASE + OPENROUTER
 # =============================================================
 
-# Your Firebase project ID
 PROJECT_ID = "factory-ai-ab9fa"
 
-# >>> IMPORTANT <<<
-# Replace this with your REAL Firebase Web API key from firebaseConfig:
-# apiKey: "AIzaSy........"
-API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"
+# Replace with your REAL Firebase Web API key (starts with AIzaSy...)
+API_KEY = "YOUR_FIREBASE_API_KEY_HERE"
 
-# Firestore base REST URL
+# Firestore REST URL
 BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
 
-# Firebase Auth REST endpoints
+# Firebase Auth API endpoints
 SIGNUP_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}"
 SIGNIN_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={API_KEY}"
 
-# OpenRouter key (you put this in Streamlit Secrets)
+# OpenRouter API key (set in Streamlit Secrets)
 OPENROUTER_API_KEY = st.secrets["openrouter_key"]
 
 
 # =============================================================
-# FIRESTORE HELPERS (REST API)
+# FIRESTORE FUNCTIONS
 # =============================================================
+
 def firestore_add(collection: str, data: dict):
-    """Add a document to a Firestore collection."""
     url = f"{BASE_URL}/{collection}?key={API_KEY}"
     payload = {"fields": {k: {"stringValue": str(v)} for k, v in data.items()}}
     requests.post(url, json=payload)
 
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=20)
 def firestore_get_all(collection: str):
-    """
-    Get all documents from a collection (cached for 30 seconds).
-    """
     url = f"{BASE_URL}/{collection}?key={API_KEY}"
     res = requests.get(url).json()
 
@@ -58,40 +52,36 @@ def firestore_get_all(collection: str):
     return items
 
 
-def firestore_update(collection: str, doc_id: str, data: dict):
-    """Update a Firestore document."""
+def firestore_update(collection, doc_id, data):
     url = f"{BASE_URL}/{collection}/{doc_id}?key={API_KEY}"
     payload = {"fields": {k: {"stringValue": str(v)} for k, v in data.items()}}
     requests.patch(url, json=payload)
-    st.cache_data.clear()  # refresh cached data
+    st.cache_data.clear()
 
 
-def firestore_delete(collection: str, doc_id: str):
-    """Delete a Firestore document."""
+def firestore_delete(collection, doc_id):
     url = f"{BASE_URL}/{collection}/{doc_id}?key={API_KEY}"
     requests.delete(url)
     st.cache_data.clear()
 
 
-def get_jobs_for_user(user_email: str):
-    """Return only jobs created by this user (client-side filter)."""
+def get_jobs_for_user(user_email):
     all_jobs = firestore_get_all("jobs")
     return [j for j in all_jobs if j.get("user_email") == user_email]
 
 
 # =============================================================
-# AUTH: SIGNUP + LOGIN USING FIREBASE AUTH REST
+# AUTH FUNCTIONS (Firebase Auth REST)
 # =============================================================
-def signup_user(email: str, password: str):
+
+def signup_user(email, password):
     payload = {"email": email, "password": password, "returnSecureToken": True}
-    resp = requests.post(SIGNUP_URL, json=payload)
-    return resp.json()
+    return requests.post(SIGNUP_URL, json=payload).json()
 
 
-def login_user(email: str, password: str):
+def login_user(email, password):
     payload = {"email": email, "password": password, "returnSecureToken": True}
-    resp = requests.post(SIGNIN_URL, json=payload)
-    return resp.json()
+    return requests.post(SIGNIN_URL, json=payload).json()
 
 
 def init_session():
@@ -101,100 +91,90 @@ def init_session():
 
 def require_login():
     if st.session_state["user"] is None:
-        st.warning("Please login first to access this page.")
+        st.warning("Please log in first.")
         st.stop()
 
 
 # =============================================================
-# AI: SMART FACTORY ASSISTANT USING OPENROUTER (DEEPSEEK)
+# AI PLANNER (DeepSeek via OpenRouter)
 # =============================================================
-def _safe_int(val, default=0):
+
+def _safe_int(value, default=0):
     try:
-        return int(val)
-    except Exception:
+        return int(value)
+    except:
         return default
 
 
-def build_jobs_summary_for_ai(user_email: str) -> str:
+def build_jobs_summary(user_email):
     jobs = get_jobs_for_user(user_email)
 
     if not jobs:
-        return "There are currently no jobs in the factory."
+        return "No jobs found."
 
-    summary_lines = []
+    lines = []
+    status_count = {"Pending": 0, "In Progress": 0, "Completed": 0}
     total_amount = 0
-    status_counts = {"Pending": 0, "In Progress": 0, "Completed": 0}
 
     for j in jobs:
         amt = _safe_int(j.get("amount", 0))
         total_amount += amt
-        status = j.get("status", "Unknown")
-        if status in status_counts:
-            status_counts[status] += 1
+        stt = j.get("status", "Unknown")
 
-        summary_lines.append(
-            f"- Job: {j.get('job_name','')} | Client: {j.get('client_name','')} | "
-            f"Amount: {amt} | Status: {status} | Type: {j.get('job_type','')} | "
-            f"Notes: {j.get('notes','')}"
+        if stt in status_count:
+            status_count[stt] += 1
+
+        lines.append(
+            f"- Job: {j.get('job_name')} | Client: {j.get('client_name')} | Amount: {amt} | "
+            f"Status: {stt} | Type: {j.get('job_type')} | Notes: {j.get('notes')}"
         )
 
-    summary_text = "\n".join(summary_lines)
-    overview = (
-        f"Total jobs: {len(jobs)}. "
-        f"Pending: {status_counts['Pending']}, In Progress: {status_counts['In Progress']}, "
-        f"Completed: {status_counts['Completed']}. "
-        f"Total amount across all jobs: {total_amount}."
+    return (
+        f"Total Jobs: {len(jobs)}, Pending: {status_count['Pending']}, "
+        f"In Progress: {status_count['In Progress']}, Completed: {status_count['Completed']}. "
+        f"Total Amount: {total_amount}.\n\n"
+        "JOB DETAILS:\n" + "\n".join(lines)
     )
 
-    return f"{overview}\n\nJob details:\n{summary_text}"
 
+def ask_ai(user_email, question):
+    job_summary = build_jobs_summary(user_email)
 
-def ask_ai(user_email: str, user_question: str) -> str:
-    """Ask AI for a plan based on factory jobs."""
-    job_summary = build_jobs_summary_for_ai(user_email)
-
-    final_prompt = (
-        "You are an expert factory planner and production manager. "
-        "You will be given the current job list of a cardboard/box factory, "
-        "with status, amount, type and notes. "
-        "Based on this, give a detailed, practical plan for what to do next, "
-        "which jobs to prioritize, and how to schedule today's and tomorrow's work.\n\n"
+    prompt = (
+        "You are a professional factory planning expert. Analyze the job data and create:\n"
+        "- A prioritized job list\n"
+        "- What should be completed today and tomorrow\n"
+        "- Delayed / risky jobs\n"
+        "- Efficiency improvement suggestions\n\n"
         f"FACTORY JOB DATA:\n{job_summary}\n\n"
-        f"USER QUESTION: {user_question}\n\n"
-        "Provide:\n"
-        "1) A priority-ordered job list\n"
-        "2) What should be completed today vs tomorrow\n"
-        "3) Any jobs at risk or delayed\n"
-        "4) Suggestions to improve efficiency.\n"
+        f"QUESTION: {question}"
     )
 
-    url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
+        "Content-Type": "application/json"
     }
-    payload = {
+
+    data = {
         "model": "deepseek/deepseek-chat",
         "messages": [
-            {"role": "system", "content": "You are a smart factory planning assistant."},
-            {"role": "user", "content": final_prompt},
-        ],
+            {"role": "system", "content": "You are a top-tier factory planning assistant."},
+            {"role": "user", "content": prompt}
+        ]
     }
 
-    resp = requests.post(url, json=payload, headers=headers).json()
+    res = requests.post("https://openrouter.ai/api/v1/chat/completions", json=data, headers=headers).json()
 
-    if "error" in resp:
-        return "❌ AI API Error: " + resp["error"].get("message", str(resp["error"]))
+    if "error" in res:
+        return "❌ AI Error: " + res["error"]["message"]
 
-    try:
-        return resp["choices"][0]["message"]["content"]
-    except Exception:
-        return "❌ Unexpected AI response: " + str(resp)
+    return res["choices"][0]["message"]["content"]
 
 
 # =============================================================
-# UI: LOGIN / SIGNUP SCREENS
+# LOGIN / SIGN UP UI
 # =============================================================
+
 init_session()
 
 auth_page = st.sidebar.selectbox("Auth", ["Login", "Sign Up"])
@@ -202,26 +182,26 @@ auth_page = st.sidebar.selectbox("Auth", ["Login", "Sign Up"])
 if st.session_state["user"] is None:
     st.title("🔐 Factory Manager Login")
 
+    # LOGIN
     if auth_page == "Login":
-        st.subheader("Login to your account")
         email = st.text_input("Email")
         password = st.text_input("Password", type="password")
 
         if st.button("Login"):
-            data = login_user(email, password)
-            if "error" in data:
-                st.error("Login failed: " + data["error"]["message"])
+            res = login_user(email, password)
+            if "error" in res:
+                st.error("Login failed: " + res["error"]["message"])
             else:
                 st.success("Logged in successfully!")
                 st.session_state["user"] = {
-                    "email": data["email"],
-                    "idToken": data["idToken"],
-                    "localId": data["localId"],
+                    "email": res["email"],
+                    "idToken": res["idToken"],
+                    "localId": res["localId"],
                 }
-                st.experimental_rerun()
+                st.rerun()   # FIXED ✔
 
-    else:  # Sign Up
-        st.subheader("Create a new account")
+    # SIGN UP
+    else:
         email = st.text_input("Email")
         password = st.text_input("Password", type="password")
         confirm = st.text_input("Confirm Password", type="password")
@@ -230,79 +210,64 @@ if st.session_state["user"] is None:
             if password != confirm:
                 st.error("Passwords do not match.")
             else:
-                data = signup_user(email, password)
-                if "error" in data:
-                    st.error("Sign up failed: " + data["error"]["message"])
+                res = signup_user(email, password)
+                if "error" in res:
+                    st.error("Sign up failed: " + res["error"]["message"])
                 else:
-                    st.success("Account created! You can now log in.")
+                    st.success("Account created! Please login.")
 
 else:
-    # =========================================================
-    # MAIN APP (ONLY AFTER LOGIN)
-    # =========================================================
+    # =============================================================
+    # MAIN APP (AFTER LOGIN)
+    # =============================================================
+
     user_email = st.session_state["user"]["email"]
 
     with st.sidebar:
         st.markdown(f"**Logged in as:** {user_email}")
         if st.button("Logout"):
             st.session_state["user"] = None
-            st.experimental_rerun()
+            st.rerun()
 
-        page = st.radio(
-            "Navigation",
-            ["Dashboard", "Add Job", "View Jobs", "AI Planner"],
-        )
+        page = st.radio("Navigate", ["Dashboard", "Add Job", "View Jobs", "AI Planner"])
 
-    # -------------------- DASHBOARD -------------------------
+    # -------------------------------------------------------------
+    # DASHBOARD
+    # -------------------------------------------------------------
     if page == "Dashboard":
-        require_login()
         st.title("📊 Factory Dashboard")
 
         jobs = get_jobs_for_user(user_email)
 
         if not jobs:
-            st.info("No jobs yet. Add some jobs first.")
+            st.info("No jobs added yet.")
         else:
             df = pd.DataFrame(jobs)
 
             df["amount_int"] = df["amount"].apply(_safe_int)
 
-            total_jobs = len(df)
-            total_amount = int(df["amount_int"].sum())
-            pending = (df["status"] == "Pending").sum()
-            progress = (df["status"] == "In Progress").sum()
-            completed = (df["status"] == "Completed").sum()
+            st.metric("Total Jobs", len(df))
+            st.metric("Total Amount (₹)", df["amount_int"].sum())
+            st.metric("Pending Jobs", sum(df["status"] == "Pending"))
 
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Total Jobs", total_jobs)
-            c2.metric("Pending", pending)
-            c3.metric("In Progress", progress)
-            c4.metric("Completed", completed)
-            st.metric("Total Amount (₹)", total_amount)
-
-            st.markdown("### Jobs Table")
             st.dataframe(df.drop(columns=["amount_int"]), use_container_width=True)
 
-    # -------------------- ADD JOB -------------------------
+    # -------------------------------------------------------------
+    # ADD JOB
+    # -------------------------------------------------------------
     elif page == "Add Job":
-        require_login()
-        st.title("➕ Add New Job")
+        st.title("➕ Add Job")
 
-        col1, col2 = st.columns(2)
-
-        with col1:
-            job_name = st.text_input("Job Name")
-            client_name = st.text_input("Client Name")
-            phone = st.text_input("Phone Number")
-        with col2:
-            amount = st.number_input("Amount (₹)", min_value=0)
-            status = st.selectbox("Status", ["Pending", "In Progress", "Completed"])
-            job_type = st.text_input("Job Type (e.g., Box, Printing, Die Cutting)")
-
+        job_name = st.text_input("Job Name")
+        client_name = st.text_input("Client Name")
+        phone = st.text_input("Phone Number")
+        amount = st.number_input("Amount (₹)", min_value=0)
+        status = st.selectbox("Status", ["Pending", "In Progress", "Completed"])
+        job_type = st.text_input("Job Type")
         notes = st.text_area("Notes")
 
         if st.button("Save Job"):
-            data = {
+            firestore_add("jobs", {
                 "job_name": job_name,
                 "client_name": client_name,
                 "phone": phone,
@@ -312,15 +277,15 @@ else:
                 "notes": notes,
                 "created_at": datetime.utcnow().isoformat(),
                 "user_email": user_email,
-            }
-            firestore_add("jobs", data)
+            })
             st.cache_data.clear()
-            st.success("Job saved!")
+            st.success("Job added!")
 
-    # -------------------- VIEW / EDIT JOBS ----------------
+    # -------------------------------------------------------------
+    # VIEW JOBS
+    # -------------------------------------------------------------
     elif page == "View Jobs":
-        require_login()
-        st.title("📋 View / Edit Jobs")
+        st.title("📋 View & Edit Jobs")
 
         jobs = get_jobs_for_user(user_email)
 
@@ -330,46 +295,36 @@ else:
             df = pd.DataFrame(jobs)
             st.dataframe(df, use_container_width=True)
 
-            st.subheader("Edit or Delete Job")
-            selected_id = st.selectbox("Select Job ID", df["id"])
-            job = df[df["id"] == selected_id].iloc[0]
+            selected = st.selectbox("Select Job ID", df["id"])
+            job = df[df["id"] == selected].iloc[0]
 
-            col1, col2 = st.columns(2)
-            with col1:
-                new_status = st.selectbox(
-                    "Status",
-                    ["Pending", "In Progress", "Completed"],
-                    index=["Pending", "In Progress", "Completed"].index(job["status"]),
-                )
-                new_amount = st.number_input(
-                    "Amount (₹)", min_value=0, value=_safe_int(job["amount"])
-                )
-            with col2:
-                new_notes = st.text_area("Notes", job["notes"])
+            new_status = st.selectbox("Status", ["Pending", "In Progress", "Completed"], 
+                                      index=["Pending", "In Progress", "Completed"].index(job["status"]))
+            new_amount = st.number_input("Amount (₹)", value=_safe_int(job["amount"]))
+            new_notes = st.text_area("Notes", job["notes"])
 
-            if st.button("Update Job"):
-                firestore_update("jobs", selected_id, {
+            if st.button("Update"):
+                firestore_update("jobs", selected, {
                     "status": new_status,
                     "amount": new_amount,
-                    "notes": new_notes,
+                    "notes": new_notes
                 })
-                st.success("Job updated! Refresh to see latest data.")
+                st.success("Updated!")
 
-            if st.button("Delete Job"):
-                firestore_delete("jobs", selected_id)
-                st.warning("Job deleted!")
+            if st.button("Delete"):
+                firestore_delete("jobs", selected)
+                st.warning("Deleted!")
 
-    # -------------------- AI PLANNER ----------------------
+    # -------------------------------------------------------------
+    # AI PLANNER
+    # -------------------------------------------------------------
     elif page == "AI Planner":
-        require_login()
-        st.title("🤖 Smart Factory Planner (AI)")
-        st.write("AI reads your jobs and gives you a work plan.")
+        st.title("🤖 Smart AI Planner")
 
-        default_q = "Give me a plan for what I should complete today and tomorrow."
-        user_q = st.text_area("Ask the AI planner:", default_q, height=90)
+        question = st.text_area("Ask AI:", "Give me today's factory plan.")
 
         if st.button("Generate Plan"):
-            with st.spinner("Asking AI..."):
-                reply = ask_ai(user_email, user_q)
+            with st.spinner("AI thinking..."):
+                answer = ask_ai(user_email, question)
             st.markdown("### 📌 AI Plan:")
-            st.write(reply)
+            st.write(answer)
