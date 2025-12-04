@@ -1,79 +1,106 @@
 import streamlit as st
-import pyrebase
-from datetime import datetime
+import requests
 import pandas as pd
+from datetime import datetime
 
-st.set_page_config(page_title="Factory Management Dashboard", layout="wide")
+st.set_page_config(page_title="Factory Manager", layout="wide")
 
-# -----------------------------------------------------
-# FIREBASE CONFIG (NO PRIVATE KEY NEEDED)
-# -----------------------------------------------------
-firebaseConfig = {
-    "apiKey": "YOUR_API_KEY",
-    "authDomain": "factory-ai-ab9fa.firebaseapp.com",
-    "projectId": "factory-ai-ab9fa",
-    "storageBucket": "factory-ai-ab9fa.appspot.com",
-    "messagingSenderId": "117527347099932396116",
-    "appId": "YOUR_APP_ID",
-    "databaseURL": ""
-}
+# -------------------------------------------------------------
+# FIRESTORE CONFIG  (NO PRIVATE KEY NEEDED)
+# -------------------------------------------------------------
+PROJECT_ID = "factory-ai-ab9fa"
+API_KEY = "YOUR_API_KEY"   # Replace with your Firebase Web API key
 
-firebase = pyrebase.initialize_app(firebaseConfig)
-db = firebase.firestore()
-
-st.title("🏭 Factory Management Dashboard (No Private Key Needed)")
+BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
 
 
-# -----------------------------------------------------
-# FUNCTIONS
-# -----------------------------------------------------
-def add_job(job):
-    db.collection("jobs").add(job)
-
-def get_jobs():
-    jobs = db.collection("jobs").get()
-    return [ {"id": j.id, **j.to_dict()} for j in jobs ]
-
-def update_job(job_id, new_data):
-    db.collection("jobs").document(job_id).update(new_data)
-
-def delete_job(job_id):
-    db.collection("jobs").document(job_id).delete()
+# -------------------------------------------------------------
+# FIRESTORE FUNCTIONS (REST API)
+# -------------------------------------------------------------
+def firestore_add(collection, data):
+    url = f"{BASE_URL}/{collection}?key={API_KEY}"
+    payload = {"fields": {k: {"stringValue": str(v)} for k, v in data.items()}}
+    requests.post(url, json=payload)
 
 
-# -----------------------------------------------------
-# SIDEBAR MENU
-# -----------------------------------------------------
-menu = st.sidebar.radio(
-    "Menu",
-    ["Add Job", "View Jobs", "Dashboard"]
-)
+def firestore_get(collection):
+    url = f"{BASE_URL}/{collection}?key={API_KEY}"
+    res = requests.get(url).json()
+
+    if "documents" not in res:
+        return []
+
+    documents = []
+    for doc in res["documents"]:
+        entry = {k: v["stringValue"] for k, v in doc["fields"].items()}
+        entry["id"] = doc["name"].split("/")[-1]
+        documents.append(entry)
+
+    return documents
 
 
-# -----------------------------------------------------
+def firestore_update(collection, doc_id, data):
+    url = f"{BASE_URL}/{collection}/{doc_id}?key={API_KEY}"
+    payload = {"fields": {k: {"stringValue": str(v)} for k, v in data.items()}}
+    requests.patch(url, json=payload)
+
+
+def firestore_delete(collection, doc_id):
+    url = f"{BASE_URL}/{collection}/{doc_id}?key={API_KEY}"
+    requests.delete(url)
+
+
+# -------------------------------------------------------------
+# DEEPSEEK CHATBOT (LIVE — NO STORAGE)
+# -------------------------------------------------------------
+DEEPSEEK_KEY = "YOUR_DEEPSEEK_KEY"   # Replace with your DeepSeek key
+
+def ask_deepseek(prompt):
+    url = "https://api.deepseek.com/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}", "Content-Type": "application/json"}
+
+    data = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "You are a factory assistant. Do not store any data."},
+            {"role": "user", "content": prompt}
+        ]
+    }
+
+    response = requests.post(url, headers=headers, json=data).json()
+    return response["choices"][0]["message"]["content"]
+
+
+# -------------------------------------------------------------
+# UI NAVIGATION
+# -------------------------------------------------------------
+page = st.sidebar.radio("Navigation", ["Add Job", "View Jobs", "Dashboard", "AI Chatbot"])
+
+
+# -------------------------------------------------------------
 # ADD JOB PAGE
-# -----------------------------------------------------
-if menu == "Add Job":
-    st.header("➕ Add a New Job")
+# -------------------------------------------------------------
+if page == "Add Job":
+    st.title("➕ Add New Factory Job")
 
     col1, col2 = st.columns(2)
 
     with col1:
         job_name = st.text_input("Job Name")
-        client_name = st.text_input("Client Name")
+        client = st.text_input("Client Name")
         phone = st.text_input("Phone Number")
 
     with col2:
-        amount = st.number_input("Amount (₹)", min_value=0)
+        amount = st.number_input("Amount ₹", min_value=0)
         status = st.selectbox("Status", ["Pending", "In Progress", "Completed"])
-        job_type = st.selectbox("Job Type", ["Box", "Printing", "Die Cutting", "Pasting", "Other"])
+        job_type = st.text_input("Job Type (Box / Printing / Other)")
 
     notes = st.text_area("Notes")
 
     if st.button("Save Job"):
-        job_data = {
+        data = {
             "job_name": job_name,
-            "client_name": client_name,
+            "client_name": client,
             "phone": phone,
             "amount": amount,
             "status": status,
@@ -81,78 +108,66 @@ if menu == "Add Job":
             "notes": notes,
             "created_at": datetime.utcnow().isoformat()
         }
-        add_job(job_data)
-        st.success("✅ Job saved successfully!")
+
+        firestore_add("jobs", data)
+        st.success("Job saved successfully!")
 
 
-# -----------------------------------------------------
+# -------------------------------------------------------------
 # VIEW JOBS PAGE
-# -----------------------------------------------------
-elif menu == "View Jobs":
-    st.header("📋 All Jobs")
+# -------------------------------------------------------------
+elif page == "View Jobs":
+    st.title("📋 View & Manage Jobs")
 
-    jobs = get_jobs()
+    jobs = firestore_get("jobs")
 
-    if len(jobs) == 0:
+    if not jobs:
         st.info("No jobs found.")
     else:
         df = pd.DataFrame(jobs)
+        st.dataframe(df, use_container_width=True)
 
-        st.dataframe(df)
+        st.subheader("Edit or Delete Job")
 
-        st.subheader("✏️ Edit or Delete Job")
+        selected_id = st.selectbox("Select Job ID", df["id"])
+        job = df[df["id"] == selected_id].iloc[0]
 
-        # Select job
-        job_ids = df["id"].tolist()
-        selected_job = st.selectbox("Select a job to modify", job_ids)
+        new_status = st.selectbox("Status", ["Pending", "In Progress", "Completed"],
+                                  index=["Pending", "In Progress", "Completed"].index(job["status"]))
+        new_amount = st.number_input("Amount ₹", min_value=0, value=int(job["amount"]))
+        new_notes = st.text_area("Notes", job["notes"])
 
-        job_row = df[df["id"] == selected_job].iloc[0]
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            new_status = st.selectbox(
-                "Update Status",
-                ["Pending", "In Progress", "Completed"],
-                index=["Pending", "In Progress", "Completed"].index(job_row["status"])
-            )
-
-            new_amount = st.number_input("Update Amount", min_value=0, value=int(job_row["amount"]))
-
-        with col2:
-            new_notes = st.text_area("Update Notes", value=job_row["notes"])
-
-        if st.button("Save Changes"):
-            update_job(selected_job, {
+        if st.button("Update Job"):
+            firestore_update("jobs", selected_id, {
                 "status": new_status,
                 "amount": new_amount,
                 "notes": new_notes
             })
-            st.success("Updated successfully! Refresh to see changes.")
+            st.success("Job updated!")
 
-        if st.button("🗑️ Delete Job"):
-            delete_job(selected_job)
-            st.warning("Job deleted. Refresh to update list.")
+        if st.button("Delete Job"):
+            firestore_delete("jobs", selected_id)
+            st.warning("Job deleted!")
 
 
-# -----------------------------------------------------
+# -------------------------------------------------------------
 # DASHBOARD PAGE
-# -----------------------------------------------------
-elif menu == "Dashboard":
-    st.header("📊 Summary Dashboard")
+# -------------------------------------------------------------
+elif page == "Dashboard":
+    st.title("📊 Factory Dashboard Summary")
 
-    jobs = get_jobs()
+    jobs = firestore_get("jobs")
 
-    if len(jobs) == 0:
+    if not jobs:
         st.info("No data available.")
     else:
         df = pd.DataFrame(jobs)
 
         total_jobs = len(df)
+        total_amount = sum(int(x) for x in df["amount"])
         pending = (df["status"] == "Pending").sum()
         progress = (df["status"] == "In Progress").sum()
         completed = (df["status"] == "Completed").sum()
-        total_amount = df["amount"].sum()
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Jobs", total_jobs)
@@ -160,4 +175,19 @@ elif menu == "Dashboard":
         col3.metric("In Progress", progress)
         col4.metric("Completed", completed)
 
-        st.metric("💰 Total Amount", f"₹{total_amount}")
+        st.metric("Total Amount ₹", total_amount)
+
+
+# -------------------------------------------------------------
+# AI CHATBOT PAGE
+# -------------------------------------------------------------
+elif page == "AI Chatbot":
+    st.title("🤖 DeepSeek Factory Assistant")
+    st.write("Ask anything about factory work. (Does NOT store chats.)")
+
+    user_msg = st.text_input("Your Question:")
+
+    if st.button("Ask AI"):
+        answer = ask_deepseek(user_msg)
+        st.write("### AI Response:")
+        st.write(answer)
