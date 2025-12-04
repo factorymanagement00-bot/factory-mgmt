@@ -53,7 +53,7 @@ def firestore_delete(collection, doc_id):
 # -------------------------------------------------------------
 # DEEPSEEK CHATBOT (LIVE — NO STORAGE)
 # -------------------------------------------------------------
-DEEPSEEK_KEY = "YOUR_DEEPSEEK_KEY"   # Replace with your DeepSeek key
+DEEPSEEK_KEY = "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"   # Replace with your DeepSeek key
 
 def ask_deepseek(prompt):
     url = "https://api.deepseek.com/v1/chat/completions"
