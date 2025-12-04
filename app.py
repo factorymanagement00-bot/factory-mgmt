@@ -12,7 +12,7 @@ st.set_page_config(page_title="Factory Manager Pro", layout="wide")
 PROJECT_ID = "factory-ai-ab9fa"
 
 # Replace with your REAL Firebase Web API key (starts with AIzaSy...)
-API_KEY = "YOUR_FIREBASE_API_KEY_HERE"
+API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"
 
 # Firestore REST URL
 BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
