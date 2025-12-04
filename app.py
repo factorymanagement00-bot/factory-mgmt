@@ -15,7 +15,7 @@ PROJECT_ID = "factory-ai-ab9fa"
 # >>> IMPORTANT <<<
 # Replace this with your REAL Firebase Web API key from firebaseConfig:
 # apiKey: "AIzaSy........"
-API_KEY = "YOUR_FIREBASE_API_KEY_HERE"
+API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"
 
 # Firestore base REST URL
 BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
