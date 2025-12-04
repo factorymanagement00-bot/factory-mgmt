@@ -1,293 +1,163 @@
 import streamlit as st
-import pandas as pd
+import pyrebase
 from datetime import datetime
+import pandas as pd
 
-import firebase_admin
-from firebase_admin import credentials, firestore
+st.set_page_config(page_title="Factory Management Dashboard", layout="wide")
 
-# ============================================================
-# STREAMLIT PAGE CONFIG
-# ============================================================
-st.set_page_config(
-    page_title="Factory Management App",
-    layout="wide",
-)
+# -----------------------------------------------------
+# FIREBASE CONFIG (NO PRIVATE KEY NEEDED)
+# -----------------------------------------------------
+firebaseConfig = {
+    "apiKey": "YOUR_API_KEY",
+    "authDomain": "factory-ai-ab9fa.firebaseapp.com",
+    "projectId": "factory-ai-ab9fa",
+    "storageBucket": "factory-ai-ab9fa.appspot.com",
+    "messagingSenderId": "117527347099932396116",
+    "appId": "YOUR_APP_ID",
+    "databaseURL": ""
+}
 
-st.title("🏭 Factory Management Dashboard")
+firebase = pyrebase.initialize_app(firebaseConfig)
+db = firebase.firestore()
 
-
-# ============================================================
-# FIREBASE INITIALIZATION (USING st.secrets)
-# ============================================================
-@st.cache_resource
-def init_firestore():
-    """
-    Initialize Firebase Admin SDK & return Firestore client.
-    Expects firebase service account JSON in st.secrets["firebase"].
-    """
-    if not firebase_admin._apps:
-        cred = credentials.Certificate(dict(st.secrets["firebase"]))
-        firebase_admin.initialize_app(cred)
-    return firestore.client()
+st.title("🏭 Factory Management Dashboard (No Private Key Needed)")
 
 
-db = init_firestore()
-
-
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
-def add_job(job_data: dict):
-    """Add a new job document to Firestore."""
-    db.collection("jobs").add(job_data)
-
+# -----------------------------------------------------
+# FUNCTIONS
+# -----------------------------------------------------
+def add_job(job):
+    db.collection("jobs").add(job)
 
 def get_jobs():
-    """Fetch all jobs from Firestore as list of dicts."""
-    docs = db.collection("jobs").order_by("created_at", direction=firestore.Query.DESCENDING).stream()
-    rows = []
-    for d in docs:
-        data = d.to_dict()
-        data["id"] = d.id
-        rows.append(data)
-    return rows
+    jobs = db.collection("jobs").get()
+    return [ {"id": j.id, **j.to_dict()} for j in jobs ]
+
+def update_job(job_id, new_data):
+    db.collection("jobs").document(job_id).update(new_data)
+
+def delete_job(job_id):
+    db.collection("jobs").document(job_id).delete()
 
 
-def update_job(doc_id: str, updated_data: dict):
-    db.collection("jobs").document(doc_id).update(updated_data)
-
-
-def delete_job(doc_id: str):
-    db.collection("jobs").document(doc_id).delete()
-
-
-# ============================================================
-# SIDEBAR NAVIGATION
-# ============================================================
-st.sidebar.header("Navigation")
-page = st.sidebar.radio(
-    "Go to",
-    ["Add New Job", "View / Manage Jobs", "Summary"],
+# -----------------------------------------------------
+# SIDEBAR MENU
+# -----------------------------------------------------
+menu = st.sidebar.radio(
+    "Menu",
+    ["Add Job", "View Jobs", "Dashboard"]
 )
 
 
-# ============================================================
-# PAGE: ADD NEW JOB
-# ============================================================
-if page == "Add New Job":
-    st.subheader("➕ Add New Job")
+# -----------------------------------------------------
+# ADD JOB PAGE
+# -----------------------------------------------------
+if menu == "Add Job":
+    st.header("➕ Add a New Job")
 
-    with st.form("add_job_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
+    col1, col2 = st.columns(2)
 
-        with col1:
-            job_name = st.text_input("Job Name *")
-            client_name = st.text_input("Client Name")
-            quantity = st.number_input("Quantity", min_value=0, step=1, value=0)
-            amount = st.number_input("Amount (₹)", min_value=0.0, step=100.0, value=0.0)
+    with col1:
+        job_name = st.text_input("Job Name")
+        client_name = st.text_input("Client Name")
+        phone = st.text_input("Phone Number")
 
-        with col2:
-            job_type = st.selectbox(
-                "Job Type",
-                ["Box Making", "Printing", "Die Cutting", "Pasting", "Other"],
-            )
-            status = st.selectbox(
-                "Status",
-                ["Pending", "In Progress", "Completed", "On Hold"],
-            )
-            due_date = st.date_input("Due Date (optional)", value=None)
-            phone = st.text_input("Client Phone")
+    with col2:
+        amount = st.number_input("Amount (₹)", min_value=0)
+        status = st.selectbox("Status", ["Pending", "In Progress", "Completed"])
+        job_type = st.selectbox("Job Type", ["Box", "Printing", "Die Cutting", "Pasting", "Other"])
 
-        notes = st.text_area("Notes / Details")
+    notes = st.text_area("Notes")
 
-        submitted = st.form_submit_button("Save Job")
-
-        if submitted:
-            if not job_name:
-                st.error("Job Name is required.")
-            else:
-                job_data = {
-                    "job_name": job_name,
-                    "client_name": client_name,
-                    "job_type": job_type,
-                    "quantity": int(quantity),
-                    "amount": float(amount),
-                    "status": status,
-                    "phone": phone,
-                    "due_date": due_date.isoformat() if due_date else None,
-                    "notes": notes,
-                    "created_at": datetime.utcnow(),
-                }
-                add_job(job_data)
-                st.success("✅ Job saved to Firebase!")
+    if st.button("Save Job"):
+        job_data = {
+            "job_name": job_name,
+            "client_name": client_name,
+            "phone": phone,
+            "amount": amount,
+            "status": status,
+            "job_type": job_type,
+            "notes": notes,
+            "created_at": datetime.utcnow().isoformat()
+        }
+        add_job(job_data)
+        st.success("✅ Job saved successfully!")
 
 
-# ============================================================
-# PAGE: VIEW / MANAGE JOBS
-# ============================================================
-elif page == "View / Manage Jobs":
-    st.subheader("📋 Jobs List")
+# -----------------------------------------------------
+# VIEW JOBS PAGE
+# -----------------------------------------------------
+elif menu == "View Jobs":
+    st.header("📋 All Jobs")
 
     jobs = get_jobs()
-    if not jobs:
-        st.info("No jobs found. Add a job from the ‘Add New Job’ page.")
+
+    if len(jobs) == 0:
+        st.info("No jobs found.")
     else:
         df = pd.DataFrame(jobs)
 
-        # Format for display
-        display_df = df.copy()
-        if "created_at" in display_df.columns:
-            display_df["created_at"] = display_df["created_at"].astype(str)
+        st.dataframe(df)
 
-        st.dataframe(
-            display_df[
-                [
-                    "job_name",
-                    "client_name",
-                    "job_type",
-                    "quantity",
-                    "amount",
-                    "status",
-                    "phone",
-                    "due_date",
-                    "notes",
-                    "created_at",
-                    "id",
-                ]
-            ],
-            use_container_width=True,
-        )
+        st.subheader("✏️ Edit or Delete Job")
 
-        st.markdown("---")
-        st.subheader("✏️ Edit or 🗑️ Delete Job")
-
+        # Select job
         job_ids = df["id"].tolist()
-        job_labels = [
-            f"{row.job_name} ({row.status}) - {row.id[:6]}"
-            for _, row in df.iterrows()
-        ]
+        selected_job = st.selectbox("Select a job to modify", job_ids)
 
-        selected_index = st.selectbox(
-            "Select a job",
-            options=list(range(len(job_ids))),
-            format_func=lambda i: job_labels[i],
-        )
+        job_row = df[df["id"] == selected_job].iloc[0]
 
-        selected_row = df.iloc[selected_index]
-        doc_id = selected_row["id"]
+        col1, col2 = st.columns(2)
 
-        tab1, tab2 = st.tabs(["Edit", "Delete"])
+        with col1:
+            new_status = st.selectbox(
+                "Update Status",
+                ["Pending", "In Progress", "Completed"],
+                index=["Pending", "In Progress", "Completed"].index(job_row["status"])
+            )
 
-        with tab1:
-            st.write("Update details and click **Save Changes**.")
-            with st.form("edit_job_form"):
-                col1, col2 = st.columns(2)
+            new_amount = st.number_input("Update Amount", min_value=0, value=int(job_row["amount"]))
 
-                with col1:
-                    edit_job_name = st.text_input("Job Name *", value=selected_row.get("job_name", ""))
-                    edit_client_name = st.text_input("Client Name", value=selected_row.get("client_name", ""))
-                    edit_quantity = st.number_input(
-                        "Quantity",
-                        min_value=0,
-                        step=1,
-                        value=int(selected_row.get("quantity", 0)),
-                    )
-                    edit_amount = st.number_input(
-                        "Amount (₹)",
-                        min_value=0.0,
-                        step=100.0,
-                        value=float(selected_row.get("amount", 0.0)),
-                    )
+        with col2:
+            new_notes = st.text_area("Update Notes", value=job_row["notes"])
 
-                with col2:
-                    edit_job_type = st.selectbox(
-                        "Job Type",
-                        ["Box Making", "Printing", "Die Cutting", "Pasting", "Other"],
-                        index=max(
-                            0,
-                            ["Box Making", "Printing", "Die Cutting", "Pasting", "Other"].index(
-                                selected_row.get("job_type", "Box Making")
-                            )
-                            if selected_row.get("job_type") in
-                               ["Box Making", "Printing", "Die Cutting", "Pasting", "Other"]
-                            else 0,
-                        ),
-                    )
-                    edit_status = st.selectbox(
-                        "Status",
-                        ["Pending", "In Progress", "Completed", "On Hold"],
-                        index=max(
-                            0,
-                            ["Pending", "In Progress", "Completed", "On Hold"].index(
-                                selected_row.get("status", "Pending")
-                            )
-                            if selected_row.get("status") in
-                               ["Pending", "In Progress", "Completed", "On Hold"]
-                            else 0,
-                        ),
-                    )
-                    edit_phone = st.text_input("Client Phone", value=selected_row.get("phone", ""))
-                    # Due date stored as string; leave as text for simplicity
-                    edit_due_date = st.text_input(
-                        "Due Date (YYYY-MM-DD or blank)",
-                        value=selected_row.get("due_date", "") or "",
-                    )
+        if st.button("Save Changes"):
+            update_job(selected_job, {
+                "status": new_status,
+                "amount": new_amount,
+                "notes": new_notes
+            })
+            st.success("Updated successfully! Refresh to see changes.")
 
-                edit_notes = st.text_area("Notes / Details", value=selected_row.get("notes", ""))
-
-                save_btn = st.form_submit_button("Save Changes")
-
-                if save_btn:
-                    updated = {
-                        "job_name": edit_job_name,
-                        "client_name": edit_client_name,
-                        "job_type": edit_job_type,
-                        "quantity": int(edit_quantity),
-                        "amount": float(edit_amount),
-                        "status": edit_status,
-                        "phone": edit_phone,
-                        "notes": edit_notes,
-                    }
-                    if edit_due_date.strip():
-                        updated["due_date"] = edit_due_date.strip()
-                    else:
-                        updated["due_date"] = None
-
-                    update_job(doc_id, updated)
-                    st.success("✅ Job updated successfully! Please refresh the page to see changes.")
-
-        with tab2:
-            st.error("This will permanently delete the job.")
-            if st.button("🗑️ Delete this job"):
-                delete_job(doc_id)
-                st.success("🗑️ Job deleted. Please refresh the page to update the list.")
+        if st.button("🗑️ Delete Job"):
+            delete_job(selected_job)
+            st.warning("Job deleted. Refresh to update list.")
 
 
-# ============================================================
-# PAGE: SUMMARY / DASHBOARD
-# ============================================================
-elif page == "Summary":
-    st.subheader("📊 Summary")
+# -----------------------------------------------------
+# DASHBOARD PAGE
+# -----------------------------------------------------
+elif menu == "Dashboard":
+    st.header("📊 Summary Dashboard")
 
     jobs = get_jobs()
-    if not jobs:
-        st.info("No jobs yet.")
+
+    if len(jobs) == 0:
+        st.info("No data available.")
     else:
         df = pd.DataFrame(jobs)
 
         total_jobs = len(df)
-        total_pending = (df["status"] == "Pending").sum()
-        total_in_progress = (df["status"] == "In Progress").sum()
-        total_completed = (df["status"] == "Completed").sum()
+        pending = (df["status"] == "Pending").sum()
+        progress = (df["status"] == "In Progress").sum()
+        completed = (df["status"] == "Completed").sum()
         total_amount = df["amount"].sum()
 
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Total Jobs", total_jobs)
-        c2.metric("Pending", int(total_pending))
-        c3.metric("In Progress", int(total_in_progress))
-        c4.metric("Completed", int(total_completed))
-        c5.metric("Total Amount (₹)", f"{total_amount:,.2f}")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Jobs", total_jobs)
+        col2.metric("Pending", pending)
+        col3.metric("In Progress", progress)
+        col4.metric("Completed", completed)
 
-        st.markdown("### Jobs by Status")
-        status_counts = df["status"].value_counts()
-        st.bar_chart(status_counts)
+        st.metric("💰 Total Amount", f"₹{total_amount}")
