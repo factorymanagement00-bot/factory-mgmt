@@ -6,16 +6,21 @@ from datetime import datetime
 st.set_page_config(page_title="Factory Manager", layout="wide")
 
 # -------------------------------------------------------------
-# FIRESTORE CONFIG  (NO PRIVATE KEY NEEDED)
+# FIRESTORE CONFIG (NO PRIVATE KEY NEEDED)
 # -------------------------------------------------------------
 PROJECT_ID = "factory-ai-ab9fa"
-API_KEY = "YOUR_API_KEY"   # Replace with your Firebase Web API key
+API_KEY = "YOUR_FIREBASE_API_KEY"  # Replace with your Firebase Web API key (AIzaSy...)
 
 BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
 
+# -------------------------------------------------------------
+# OPENROUTER API KEY (from Streamlit Secrets)
+# -------------------------------------------------------------
+OPENROUTER_API_KEY = st.secrets["openrouter_key"]
+
 
 # -------------------------------------------------------------
-# FIRESTORE FUNCTIONS (REST API)
+# FIRESTORE REST FUNCTIONS
 # -------------------------------------------------------------
 def firestore_add(collection, data):
     url = f"{BASE_URL}/{collection}?key={API_KEY}"
@@ -30,13 +35,13 @@ def firestore_get(collection):
     if "documents" not in res:
         return []
 
-    documents = []
+    items = []
     for doc in res["documents"]:
-        entry = {k: v["stringValue"] for k, v in doc["fields"].items()}
-        entry["id"] = doc["name"].split("/")[-1]
-        documents.append(entry)
+        row = {k: v["stringValue"] for k, v in doc["fields"].items()}
+        row["id"] = doc["name"].split("/")[-1]
+        items.append(row)
 
-    return documents
+    return items
 
 
 def firestore_update(collection, doc_id, data):
@@ -51,28 +56,34 @@ def firestore_delete(collection, doc_id):
 
 
 # -------------------------------------------------------------
-# DEEPSEEK CHATBOT (LIVE — NO STORAGE)
+# AI CHATBOT USING OPENROUTER (DeepSeek Model)
 # -------------------------------------------------------------
-DEEPSEEK_KEY = "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"   # Replace with your DeepSeek key
+def ask_ai(prompt):
+    url = "https://openrouter.ai/api/v1/chat/completions"
 
-def ask_deepseek(prompt):
-    url = "https://api.deepseek.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {DEEPSEEK_KEY}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
 
     data = {
-        "model": "deepseek-chat",
+        "model": "deepseek/deepseek-chat",
         "messages": [
-            {"role": "system", "content": "You are a factory assistant. Do not store any data."},
+            {"role": "system", "content": "You are a factory management assistant."},
             {"role": "user", "content": prompt}
         ]
     }
 
-    response = requests.post(url, headers=headers, json=data).json()
+    response = requests.post(url, json=data, headers=headers).json()
+
+    if "error" in response:
+        return "❌ API Error: " + response["error"]["message"]
+
     return response["choices"][0]["message"]["content"]
 
 
 # -------------------------------------------------------------
-# UI NAVIGATION
+# NAVIGATION SIDEBAR
 # -------------------------------------------------------------
 page = st.sidebar.radio("Navigation", ["Add Job", "View Jobs", "Dashboard", "AI Chatbot"])
 
@@ -93,7 +104,7 @@ if page == "Add Job":
     with col2:
         amount = st.number_input("Amount ₹", min_value=0)
         status = st.selectbox("Status", ["Pending", "In Progress", "Completed"])
-        job_type = st.text_input("Job Type (Box / Printing / Other)")
+        job_type = st.text_input("Job Type")
 
     notes = st.text_area("Notes")
 
@@ -108,7 +119,6 @@ if page == "Add Job":
             "notes": notes,
             "created_at": datetime.utcnow().isoformat()
         }
-
         firestore_add("jobs", data)
         st.success("Job saved successfully!")
 
@@ -129,16 +139,17 @@ elif page == "View Jobs":
 
         st.subheader("Edit or Delete Job")
 
-        selected_id = st.selectbox("Select Job ID", df["id"])
-        job = df[df["id"] == selected_id].iloc[0]
+        selected = st.selectbox("Select Job ID", df["id"])
+        job = df[df["id"] == selected].iloc[0]
 
-        new_status = st.selectbox("Status", ["Pending", "In Progress", "Completed"],
+        new_status = st.selectbox("Update Status",
+                                  ["Pending", "In Progress", "Completed"],
                                   index=["Pending", "In Progress", "Completed"].index(job["status"]))
-        new_amount = st.number_input("Amount ₹", min_value=0, value=int(job["amount"]))
-        new_notes = st.text_area("Notes", job["notes"])
+        new_amount = st.number_input("Update Amount", min_value=0, value=int(job["amount"]))
+        new_notes = st.text_area("Update Notes", job["notes"])
 
         if st.button("Update Job"):
-            firestore_update("jobs", selected_id, {
+            firestore_update("jobs", selected, {
                 "status": new_status,
                 "amount": new_amount,
                 "notes": new_notes
@@ -146,7 +157,7 @@ elif page == "View Jobs":
             st.success("Job updated!")
 
         if st.button("Delete Job"):
-            firestore_delete("jobs", selected_id)
+            firestore_delete("jobs", selected)
             st.warning("Job deleted!")
 
 
@@ -159,7 +170,7 @@ elif page == "Dashboard":
     jobs = firestore_get("jobs")
 
     if not jobs:
-        st.info("No data available.")
+        st.info("No data to display.")
     else:
         df = pd.DataFrame(jobs)
 
@@ -175,19 +186,19 @@ elif page == "Dashboard":
         col3.metric("In Progress", progress)
         col4.metric("Completed", completed)
 
-        st.metric("Total Amount ₹", total_amount)
+        st.metric("Total Earnings (₹)", total_amount)
 
 
 # -------------------------------------------------------------
 # AI CHATBOT PAGE
 # -------------------------------------------------------------
 elif page == "AI Chatbot":
-    st.title("🤖 DeepSeek Factory Assistant")
-    st.write("Ask anything about factory work. (Does NOT store chats.)")
+    st.title("🤖 AI Factory Assistant")
+    st.write("Ask anything related to your factory. (AI does NOT store chat history.)")
 
-    user_msg = st.text_input("Your Question:")
+    user_text = st.text_input("Your Question:")
 
     if st.button("Ask AI"):
-        answer = ask_deepseek(user_msg)
-        st.write("### AI Response:")
-        st.write(answer)
+        reply = ask_ai(user_text)
+        st.write("### 🤖 AI Response:")
+        st.write(reply)
