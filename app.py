@@ -3,11 +3,6 @@ import requests
 import pandas as pd
 import json
 from datetime import datetime, date, time, timedelta
-from io import BytesIO
-
-from audio_recorder_streamlit import audio_recorder
-from gtts import gTTS
-from openai import OpenAI
 
 # ============================================
 # APP SETTINGS
@@ -15,12 +10,9 @@ from openai import OpenAI
 st.set_page_config(page_title="Factory Manager Pro", layout="wide")
 
 PROJECT_ID = "factory-ai-ab9fa"                # <--- your Firebase project id
-API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"             # <--- your Firebase Web API key
+API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"  # <--- your Firebase Web API key
 
-OPENROUTER_KEY = st.secrets["openrouter_key"]                 # set in Streamlit secrets
-OPENAI_API_KEY = st.secrets.get("openai_api_key", None)       # for voice STT
-
-openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+OPENROUTER_KEY = st.secrets["openrouter_key"]  # set in Streamlit secrets
 
 BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
 SIGNUP_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}"
@@ -333,32 +325,6 @@ Otherwise, answer general questions normally.
         return "AI error: " + str(resp)
 
 # ============================================
-# VOICE HELPERS (STT + TTS)
-# ============================================
-def speech_to_text(audio_bytes: bytes):
-    if openai_client is None:
-        return None, "No OPENAI_API_KEY set in secrets."
-
-    try:
-        with open("voice_input.wav", "wb") as f:
-            f.write(audio_bytes)
-        with open("voice_input.wav", "rb") as audio_file:
-            result = openai_client.audio.transcriptions.create(
-                model="whisper-1",
-                file=audio_file,
-            )
-        return result.text, None
-    except Exception as e:
-        return None, str(e)
-
-def text_to_speech_bytes(text: str):
-    mp3 = BytesIO()
-    tts = gTTS(text=text, lang="en")
-    tts.write_to_fp(mp3)
-    mp3.seek(0)
-    return mp3
-
-# ============================================
 # PLANNING HELPERS
 # ============================================
 def parse_processes(processes_str):
@@ -592,7 +558,7 @@ with st.sidebar:
     nav_btn("Add Job", "➕", "AddJob")
     nav_btn("Add Stock", "📦", "AddStock")
     nav_btn("View Jobs", "📋", "ViewJobs")
-    nav_btn("AI Chat + Voice", "🤖", "AI")
+    nav_btn("AI Chat", "🤖", "AI")
     nav_btn("AI Production Plan", "📅", "AIPlan")
 
     st.markdown('<div class="logout-btn">', unsafe_allow_html=True)
@@ -649,9 +615,12 @@ elif page == "AddJob":
 
     st.markdown("### 🧩 Job Processes")
 
+    # safer: do NOT mutate widget keys in session_state
     col_p1, col_p2, col_p3 = st.columns([3, 1, 1])
-    proc_name = st.text_input("Process Name", key="proc_name_input")
-    proc_hours = st.number_input("Hours", min_value=0.0, step=0.25, key="proc_hours_input")
+    with col_p1:
+        proc_name = st.text_input("Process Name")
+    with col_p2:
+        proc_hours = st.number_input("Hours", min_value=0.0, step=0.25)
 
     with col_p3:
         if st.button("Add Process"):
@@ -659,9 +628,7 @@ elif page == "AddJob":
                 st.session_state["job_processes"].append(
                     {"name": proc_name, "hours": proc_hours}
                 )
-                st.session_state["proc_name_input"] = ""
-                st.session_state["proc_hours_input"] = 0.0
-                st.rerun()
+                st.experimental_rerun()
 
     if st.session_state["job_processes"]:
         st.table(pd.DataFrame(st.session_state["job_processes"]))
@@ -785,9 +752,9 @@ elif page == "ViewJobs":
             fs_delete("jobs", job_id)
             st.warning("Job deleted!")
 
-# ---------- AI CHAT + VOICE ----------
+# ---------- AI CHAT (TEXT ONLY) ----------
 elif page == "AI":
-    st.title("🤖 AI Chat + Voice (with Auto Plan)")
+    st.title("🤖 AI Chat (text only, with auto plan)")
 
     # TEXT CHAT
     st.subheader("💬 Type to AI")
@@ -797,7 +764,7 @@ elif page == "AI":
         key="text_question",
     )
 
-    if st.button("Ask with Text"):
+    if st.button("Ask AI"):
         user_text = q.strip()
         if user_text:
             with st.spinner("AI thinking..."):
@@ -819,63 +786,6 @@ elif page == "AI":
                     st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
                 else:
                     st.dataframe(df_plan, use_container_width=True)
-
-    st.markdown("---")
-
-    # VOICE CHAT
-    st.subheader("🎤 Talk to AI (Voice)")
-    st.caption("Click to record, speak, then click again to stop. Then press 'Send Voice to AI'.")
-    audio_bytes = audio_recorder(
-        text="Click to record / stop",
-        pause_threshold=2.0,
-        sample_rate=44100,
-        key="voice_recorder",
-    )
-
-    if audio_bytes is not None:
-        st.audio(audio_bytes, format="audio/wav")
-
-    if st.button("Send Voice to AI"):
-        if audio_bytes is None:
-            st.warning("Record something first.")
-        elif openai_client is None:
-            st.error("Set OPENAI_API_KEY in secrets to enable voice input.")
-        else:
-            with st.spinner("Transcribing your voice..."):
-                text, err = speech_to_text(audio_bytes)
-            if err:
-                st.error("Speech-to-text error: " + err)
-            else:
-                st.write("### 📝 You said:")
-                st.write(text)
-
-                with st.spinner("AI thinking..."):
-                    answer = ask_ai(user_email, text)
-                st.session_state["last_ai_answer"] = answer
-                st.write("### 🧠 AI Answer")
-                st.write(answer)
-
-                if is_planning_query(text):
-                    st.write("### 📅 AI Plan (auto generated)")
-                    settings = get_schedule_settings()
-                    df_plan = build_ai_plan(
-                        user_email,
-                        settings["work_start"],
-                        settings["work_end"],
-                        settings["breaks"],
-                    )
-                    if df_plan.empty:
-                        st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
-                    else:
-                        st.dataframe(df_plan, use_container_width=True)
-
-    if st.session_state["last_ai_answer"]:
-        st.markdown("---")
-        st.subheader("🔊 Listen to AI Answer")
-        if st.button("Play AI Answer"):
-            with st.spinner("Generating voice..."):
-                audio_file = text_to_speech_bytes(st.session_state["last_ai_answer"])
-            st.audio(audio_file, format="audio/mp3")
 
 # ---------- AI PRODUCTION PLAN (12-HOUR PICKER) ----------
 elif page == "AIPlan":
