@@ -3,6 +3,11 @@ import requests
 import pandas as pd
 import json
 from datetime import datetime, date, timedelta
+from io import BytesIO
+
+from audio_recorder_streamlit import audio_recorder
+from gtts import gTTS
+from openai import OpenAI
 
 # ============================================
 # APP SETTINGS
@@ -11,7 +16,11 @@ st.set_page_config(page_title="Factory Manager Pro", layout="wide")
 
 PROJECT_ID = "factory-ai-ab9fa"
 API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"          # <-- put your Firebase Web API key here
-OPENROUTER_KEY = st.secrets["openrouter_key"]  # <-- set in Streamlit secrets
+
+OPENROUTER_KEY = st.secrets["openrouter_key"]          # <-- set in Streamlit secrets
+OPENAI_API_KEY = st.secrets.get("openai_api_key", None)  # for voice STT
+
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
 SIGNUP_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}"
@@ -153,7 +162,6 @@ st.markdown(base_css, unsafe_allow_html=True)
 if "sidebar_collapsed" not in st.session_state:
     st.session_state["sidebar_collapsed"] = False
 
-# When collapsed: hide title text and center icons
 if st.session_state["sidebar_collapsed"]:
     collapsed_css = """
     <style>
@@ -175,7 +183,11 @@ if "user" not in st.session_state:
 if "page" not in st.session_state:
     st.session_state["page"] = "Dashboard"
 if "job_processes" not in st.session_state:
-    st.session_state["job_processes"] = []  # used in Add Job process builder
+    st.session_state["job_processes"] = []
+if "last_ai_answer" not in st.session_state:
+    st.session_state["last_ai_answer"] = ""
+if "last_plan_df" not in st.session_state:
+    st.session_state["last_plan_df"] = []
 
 def safe_int(v):
     try:
@@ -233,7 +245,6 @@ def fs_delete(col, id):
 # ============================================
 def get_user_stocks(email):
     stocks = [s for s in fs_get("stocks") if s.get("user_email") == email]
-    # convert quantity string to float
     for s in stocks:
         s["quantity_float"] = safe_float(s.get("quantity", 0))
     return stocks
@@ -253,7 +264,7 @@ def adjust_stock_after_job(stock_id, used_qty):
             break
 
 # ============================================
-# AI — GENERAL + FACTORY
+# AI — GENERAL + FACTORY (CHAT AI)
 # ============================================
 def job_summary(email):
     jobs = [j for j in fs_get("jobs") if j.get("user_email") == email]
@@ -301,7 +312,37 @@ Factory jobs for reference (only use if the question is about work, production, 
         return "AI error: " + str(resp)
 
 # ============================================
-# AI PLAN GENERATION (SIMPLE SCHEDULER)
+# VOICE HELPERS (STT + TTS)
+# ============================================
+def speech_to_text(audio_bytes: bytes):
+    """Convert recorded audio to text using OpenAI Whisper."""
+    if openai_client is None:
+        return None, "No OPENAI_API_KEY set in secrets."
+
+    try:
+        with open("voice_input.wav", "wb") as f:
+            f.write(audio_bytes)
+
+        with open("voice_input.wav", "rb") as audio_file:
+            result = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+            )
+        text = result.text
+        return text, None
+    except Exception as e:
+        return None, str(e)
+
+def text_to_speech_bytes(text: str):
+    """Convert AI text reply to MP3 audio bytes using gTTS."""
+    mp3 = BytesIO()
+    tts = gTTS(text=text, lang="en")
+    tts.write_to_fp(mp3)
+    mp3.seek(0)
+    return mp3
+
+# ============================================
+# AI PLAN GENERATION (PLANNING AI)
 # ============================================
 DAILY_HOURS = 8  # working hours per day
 
@@ -373,6 +414,27 @@ def build_ai_plan(email):
     st.session_state["last_plan_df"] = df.to_dict("records")
     return df
 
+def is_planning_query(text: str) -> bool:
+    """Detect if user is asking for planning/schedule so we auto-generate plan."""
+    if not text:
+        return False
+    text = text.lower()
+    keywords = [
+        "plan",
+        "planning",
+        "schedule",
+        "today work",
+        "tomorrow work",
+        "factory plan",
+        "production plan",
+        "due date",
+        "priority",
+        "what should i do first",
+        "work plan",
+        "job plan",
+    ]
+    return any(k in text for k in keywords)
+
 # ============================================
 # LOGIN PAGE (CENTERED)
 # ============================================
@@ -413,7 +475,6 @@ if st.session_state["user"] is None:
 # SIDEBAR (CLEAN COLLAPSE: ICONS ONLY)
 # ============================================
 with st.sidebar:
-    # header: toggle + title
     col_toggle, col_title = st.columns([1, 4])
     with col_toggle:
         st.markdown('<div class="collapse-btn">', unsafe_allow_html=True)
@@ -444,7 +505,7 @@ with st.sidebar:
     nav_btn("Add Job", "➕", "AddJob")
     nav_btn("Add Stock", "📦", "AddStock")
     nav_btn("View Jobs", "📋", "ViewJobs")
-    nav_btn("AI Chat", "🤖", "AI")
+    nav_btn("AI Chat + Voice", "🤖", "AI")
     nav_btn("AI Plan", "📅", "AIPlan")
 
     st.markdown('<div class="logout-btn">', unsafe_allow_html=True)
@@ -501,7 +562,6 @@ elif page == "AddJob":
 
     st.markdown("### 🧩 Job Processes")
 
-    # Process builder (NO session_state crash)
     col_p1, col_p2, col_p3 = st.columns([3, 1, 1])
     proc_name = st.text_input("Process Name", key="proc_name_input")
     proc_hours = st.number_input("Hours", min_value=0.0, step=0.25, key="proc_hours_input")
@@ -512,7 +572,6 @@ elif page == "AddJob":
                 st.session_state["job_processes"].append(
                     {"name": proc_name, "hours": proc_hours}
                 )
-                # clear inputs safely
                 st.session_state["proc_name_input"] = ""
                 st.session_state["proc_hours_input"] = 0.0
                 st.rerun()
@@ -557,7 +616,6 @@ elif page == "AddJob":
                 "stock_used": stock_use_qty,
             },
         )
-        # adjust stock
         if selected_stock_id and stock_use_qty > 0:
             adjust_stock_after_job(selected_stock_id, stock_use_qty)
 
@@ -640,24 +698,95 @@ elif page == "ViewJobs":
             fs_delete("jobs", job_id)
             st.warning("Job deleted!")
 
-# ---------- AI Chat ----------
+# ---------- AI CHAT + VOICE + AUTO PLANNING ----------
 elif page == "AI":
-    st.title("🤖 AI Chat Assistant")
+    st.title("🤖 AI Chat + Voice (with Auto Plan)")
 
+    # --- TEXT INPUT ---
+    st.subheader("💬 Type to AI")
     q = st.text_area(
-        "Ask anything:",
-        "Give me today's factory plan and also tell me a random tech fact.",
+        "Ask anything (general or factory related):",
+        "Plan my work for today and also motivate me.",
+        key="text_question",
     )
-    if st.button("Ask AI"):
-        with st.spinner("AI thinking..."):
-            answer = ask_ai(user_email, q)
-        st.write(answer)
 
-# ---------- AI Plan ----------
+    if st.button("Ask with Text"):
+        user_text = q.strip()
+        if user_text:
+            with st.spinner("AI thinking..."):
+                answer = ask_ai(user_email, user_text)
+            st.session_state["last_ai_answer"] = answer
+            st.write("### 🧠 AI Answer")
+            st.write(answer)
+
+            # Auto planning if it's a planning type query
+            if is_planning_query(user_text):
+                st.write("### 📅 AI Plan (auto generated)")
+                df_plan = build_ai_plan(user_email)
+                if df_plan.empty:
+                    st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
+                else:
+                    st.dataframe(df_plan, use_container_width=True)
+
+    st.markdown("---")
+
+    # --- VOICE INPUT ---
+    st.subheader("🎤 Talk to AI (Voice)")
+
+    st.caption("Click button below, speak, then stop. Then click 'Send Voice to AI'.")
+    audio_bytes = audio_recorder(
+        text="Click to record / stop",
+        pause_threshold=2.0,
+        sample_rate=44100,
+        key="voice_recorder",
+    )
+
+    if audio_bytes is not None:
+        st.audio(audio_bytes, format="audio/wav")
+
+    if st.button("Send Voice to AI"):
+        if audio_bytes is None:
+            st.warning("Record something first.")
+        elif openai_client is None:
+            st.error("Set OPENAI_API_KEY in secrets to enable voice input.")
+        else:
+            with st.spinner("Transcribing your voice..."):
+                text, err = speech_to_text(audio_bytes)
+            if err:
+                st.error("Speech-to-text error: " + err)
+            else:
+                st.write(f"### 📝 You said:")
+                st.write(text)
+
+                with st.spinner("AI thinking..."):
+                    answer = ask_ai(user_email, text)
+                st.session_state["last_ai_answer"] = answer
+                st.write("### 🧠 AI Answer")
+                st.write(answer)
+
+                # Auto planning on voice too
+                if is_planning_query(text):
+                    st.write("### 📅 AI Plan (auto generated)")
+                    df_plan = build_ai_plan(user_email)
+                    if df_plan.empty:
+                        st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
+                    else:
+                        st.dataframe(df_plan, use_container_width=True)
+
+    # --- VOICE OUTPUT FOR LAST ANSWER ---
+    if st.session_state["last_ai_answer"]:
+        st.markdown("---")
+        st.subheader("🔊 Listen to AI Answer")
+        if st.button("Play AI Answer"):
+            with st.spinner("Generating voice..."):
+                audio_file = text_to_speech_bytes(st.session_state["last_ai_answer"])
+            st.audio(audio_file, format="audio/mp3")
+
+# ---------- AI Plan PAGE (Manual) ----------
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
 
-    st.write("This uses all jobs, their processes, durations, and due dates to build a simple schedule.")
+    st.write("This uses all jobs, their processes, durations, and due dates to build a schedule table.")
     if st.button("Generate Plan"):
         df_plan = build_ai_plan(user_email)
         if df_plan.empty:
