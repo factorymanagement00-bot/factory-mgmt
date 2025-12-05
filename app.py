@@ -7,7 +7,7 @@ st.set_page_config(page_title="Factory Manager Pro", layout="wide")
 
 # ===================== FIREBASE CONFIG =====================
 PROJECT_ID = "factory-ai-ab9fa"
-API_KEY = "YOUR_FIREBASE_API_KEY"   # <-- YOUR FIREBASE WEB API KEY
+API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"   # <-- YOUR FIREBASE WEB API KEY
 
 BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
 
