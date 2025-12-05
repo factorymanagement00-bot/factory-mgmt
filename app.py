@@ -1,7 +1,8 @@
 import streamlit as st
 import requests
 import pandas as pd
-from datetime import datetime
+import json
+from datetime import datetime, date, timedelta
 
 # ============================================
 # APP SETTINGS
@@ -173,12 +174,20 @@ if "user" not in st.session_state:
     st.session_state["user"] = None
 if "page" not in st.session_state:
     st.session_state["page"] = "Dashboard"
+if "job_processes" not in st.session_state:
+    st.session_state["job_processes"] = []  # used in Add Job process builder
 
 def safe_int(v):
     try:
         return int(v)
     except Exception:
         return 0
+
+def safe_float(v):
+    try:
+        return float(v)
+    except Exception:
+        return 0.0
 
 # ============================================
 # AUTH FUNCTIONS
@@ -237,7 +246,7 @@ def ask_ai(email, query):
 User question:
 {query}
 
-Factory jobs for reference (only use if question is about work, production, jobs, or money):
+Factory jobs for reference (only use if the question is about work, production, jobs, or money):
 {summary}
 """
     resp = requests.post(
@@ -266,6 +275,82 @@ Factory jobs for reference (only use if question is about work, production, jobs
         return resp["choices"][0]["message"]["content"]
     except Exception:
         return "AI error: " + str(resp)
+
+# ============================================
+# AI PLAN GENERATION (NO LLM, SMART SCHEDULER)
+# ============================================
+DAILY_HOURS = 8  # number of working hours per day
+
+def parse_processes(processes_str):
+    try:
+        data = json.loads(processes_str)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+    return []
+
+def build_ai_plan(email):
+    jobs = [j for j in fs_get("jobs") if j.get("user_email") == email]
+    tasks = []
+
+    for j in jobs:
+        job_name = j.get("job_name", "")
+        due_str = j.get("due_date", "")
+        try:
+            due = date.fromisoformat(due_str) if due_str else None
+        except Exception:
+            due = None
+
+        processes = parse_processes(j.get("processes", "[]"))
+        for p in processes:
+            pname = p.get("name", "")
+            hrs = safe_float(p.get("hours", 0))
+            if hrs <= 0:
+                continue
+            tasks.append(
+                {
+                    "job": job_name,
+                    "process": pname,
+                    "hours": hrs,
+                    "due_date": due,
+                }
+            )
+
+    if not tasks:
+        return pd.DataFrame()
+
+    # sort by due date (None last), then by job
+    tasks.sort(key=lambda x: (x["due_date"] or date(2100, 1, 1), x["job"]))
+
+    rows = []
+    current_day = 1
+    remaining_hours = DAILY_HOURS
+    today = date.today()
+
+    for t in tasks:
+        hrs = t["hours"]
+        if hrs > remaining_hours:  # move to next day
+            current_day += 1
+            remaining_hours = DAILY_HOURS
+
+        plan_date = today + timedelta(days=current_day - 1)
+        remaining_hours -= hrs
+
+        rows.append(
+            {
+                "Day": f"Day {current_day}",
+                "Planned Date": plan_date.isoformat(),
+                "Job": t["job"],
+                "Process": t["process"],
+                "Hours": hrs,
+                "Due Date": t["due_date"].isoformat() if t["due_date"] else "",
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    st.session_state["last_plan_df"] = df.to_dict("records")
+    return df
 
 # ============================================
 # LOGIN PAGE (CENTERED)
@@ -326,7 +411,6 @@ with st.sidebar:
 
     def nav_btn(label, icon, page_name):
         box_class = "nav-selected" if st.session_state["page"] == page_name else "navbox"
-        # label decides text based on collapse state
         text = icon if st.session_state["sidebar_collapsed"] else f"{icon}  {label}"
         with st.container():
             st.markdown(f'<div class="{box_class}">', unsafe_allow_html=True)
@@ -339,6 +423,7 @@ with st.sidebar:
     nav_btn("Add Job", "➕", "AddJob")
     nav_btn("View Jobs", "📋", "ViewJobs")
     nav_btn("AI Chat", "🤖", "AI")
+    nav_btn("AI Plan", "📅", "AIPlan")
 
     st.markdown('<div class="logout-btn">', unsafe_allow_html=True)
     if st.button("Logout"):
@@ -389,9 +474,33 @@ elif page == "AddJob":
     amount = st.number_input("Amount", min_value=0)
     job_type = st.text_input("Job Type")
     status = st.selectbox("Status", ["Pending", "In Progress", "Completed"])
-    notes = st.text_area("Notes")
+    due_date = st.date_input("Due Date", value=date.today())
+
+    st.markdown("### 🧩 Job Processes")
+
+    # Process builder
+    col_p1, col_p2, col_p3 = st.columns([3, 1, 1])
+    with col_p1:
+        proc_name = st.text_input("Process Name", key="proc_name")
+    with col_p2:
+        proc_hours = st.number_input("Hours", min_value=0.0, step=0.25, key="proc_hours")
+    with col_p3:
+        if st.button("Add Process"):
+            if proc_name and proc_hours > 0:
+                st.session_state["job_processes"].append(
+                    {"name": proc_name, "hours": proc_hours}
+                )
+                st.session_state["proc_name"] = ""
+                st.session_state["proc_hours"] = 0.0
+
+    # Show current processes
+    if st.session_state["job_processes"]:
+        st.table(pd.DataFrame(st.session_state["job_processes"]))
+    else:
+        st.caption("No processes added yet. Add steps above.")
 
     if st.button("Save Job"):
+        processes_json = json.dumps(st.session_state["job_processes"])
         fs_add(
             "jobs",
             {
@@ -401,13 +510,16 @@ elif page == "AddJob":
                 "amount": amount,
                 "job_type": job_type,
                 "status": status,
-                "notes": notes,
+                "notes": "",
                 "user_email": user_email,
                 "created_at": datetime.utcnow().isoformat(),
+                "due_date": due_date.isoformat(),
+                "processes": processes_json,
             },
         )
+        st.session_state["job_processes"] = []
         st.cache_data.clear()
-        st.success("Job saved!")
+        st.success("Job with processes saved!")
 
 # ---------- View & Edit Jobs ----------
 elif page == "ViewJobs":
@@ -429,7 +541,7 @@ elif page == "ViewJobs":
             ["Pending", "In Progress", "Completed"],
             index=["Pending", "In Progress", "Completed"].index(job["status"]),
         )
-        new_notes = st.text_area("Notes", job["notes"])
+        new_notes = st.text_area("Notes", job.get("notes", ""))
 
         if st.button("Update Job"):
             fs_update(
@@ -447,8 +559,31 @@ elif page == "ViewJobs":
 elif page == "AI":
     st.title("🤖 AI Chat Assistant")
 
-    q = st.text_area("Ask anything:", "Give me today's factory plan and also tell me a random tech fact.")
+    q = st.text_area(
+        "Ask anything:",
+        "Give me today's factory plan and also tell me a random tech fact.",
+    )
     if st.button("Ask AI"):
         with st.spinner("AI thinking..."):
             answer = ask_ai(user_email, q)
         st.write(answer)
+
+# ---------- AI Plan ----------
+elif page == "AIPlan":
+    st.title("📅 AI Production Plan")
+
+    st.write("This will use all jobs, their processes, durations, and due dates to build a simple schedule.")
+    if st.button("Generate Plan"):
+        df_plan = build_ai_plan(user_email)
+        if df_plan.empty:
+            st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
+        else:
+            st.success("Plan generated!")
+            st.dataframe(df_plan, use_container_width=True)
+    else:
+        # If we already generated a plan in this session, show it
+        records = st.session_state.get("last_plan_df", [])
+        if records:
+            st.dataframe(pd.DataFrame(records), use_container_width=True)
+        else:
+            st.info("Click 'Generate Plan' to create a schedule.")
