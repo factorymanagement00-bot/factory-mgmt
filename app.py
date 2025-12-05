@@ -270,25 +270,47 @@ def adjust_stock_after_job(stock_id, used_qty):
             break
 
 # ============================================
-# AI — GENERAL + FACTORY (CHAT AI)
+# AI — DATA SUMMARIES FOR CONTEXT
 # ============================================
 def job_summary(email):
     jobs = [j for j in fs_get("jobs") if j.get("user_email") == email]
     if not jobs:
-        return ""
+        return "No jobs in the system yet."
     return "\n".join(
-        f"- {j['job_name']} | {j['status']} | Qty {j.get('quantity','')} | ₹{j['amount']}"
+        f"- {j['job_name']} | {j['status']} | Qty {j.get('quantity','')} | Amount ₹{j['amount']} | Due {j.get('due_date','')}"
         for j in jobs
     )
 
+def stock_summary(email):
+    stocks = get_user_stocks(email)
+    if not stocks:
+        return "No stock items currently available."
+    return "\n".join(
+        f"- {s['name']} ({s.get('category','')}) : {s['quantity_float']}"
+        for s in stocks
+    )
+
+# ============================================
+# AI — GENERAL + FACTORY (CHAT AI)
+# ============================================
 def ask_ai(email, query):
-    summary = job_summary(email)
+    jobs_text = job_summary(email)
+    stocks_text = stock_summary(email)
+
     user_prompt = f"""
+You are a factory management AI assistant.
+
 User question:
 {query}
 
-Factory jobs for reference (only use if the question is about work, production, jobs, or money):
-{summary}
+Factory jobs (for reference):
+{jobs_text}
+
+Current stock (for reference):
+{stocks_text}
+
+Use the data when the user asks about jobs, stock, planning, schedule, or production.
+Otherwise, answer general questions normally.
 """
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -299,14 +321,7 @@ Factory jobs for reference (only use if the question is about work, production, 
         json={
             "model": "deepseek/deepseek-chat",
             "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a helpful assistant. "
-                        "You can answer ANY general question AND also give smart factory planning advice. "
-                        "Only use the job data when it's relevant."
-                    ),
-                },
+                {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": user_prompt},
             ],
         },
@@ -375,6 +390,8 @@ def is_planning_query(text: str) -> bool:
         "what should i do first",
         "work plan",
         "job plan",
+        "make a plan",
+        "generate a plan",
     ]
     return any(k in text for k in keywords)
 
@@ -489,8 +506,8 @@ def build_ai_plan(email, work_start, work_end, breaks):
             rows.append(
                 {
                     "Day": day_label(d),
-                    "Planned Start": current_dt.strftime("%Y-%m-%d %H:%M"),
-                    "Planned End": end_dt.strftime("%Y-%m-%d %H:%M"),
+                    "Planned Start": current_dt.strftime("%Y-%m-%d %I:%M %p"),
+                    "Planned End": end_dt.strftime("%Y-%m-%d %I:%M %p"),
                     "Job": t["job"],
                     "Process": t["process"],
                     "Hours": round(slot_hours, 2),
@@ -860,8 +877,7 @@ elif page == "AI":
                 audio_file = text_to_speech_bytes(st.session_state["last_ai_answer"])
             st.audio(audio_file, format="audio/mp3")
 
-# ---------- AI PRODUCTION PLAN ----------
-# ---------- AI PRODUCTION PLAN (12-HOUR TIME PICKER) ----------
+# ---------- AI PRODUCTION PLAN (12-HOUR PICKER) ----------
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
 
@@ -870,7 +886,7 @@ elif page == "AIPlan":
         "based on your working hours and breaks."
     )
 
-    # -------- CUSTOM 12-HOUR TIME PICKER --------
+    # Custom 12-hour time picker
     def time_picker(label, default):
         col1, col2, col3 = st.columns([2, 2, 1])
 
@@ -881,33 +897,36 @@ elif page == "AIPlan":
         with col1:
             h = st.selectbox(f"{label} (Hour)", list(range(1, 13)), index=(hour_12 - 1))
         with col2:
-            m = st.selectbox(f"{label} (Minute)", [0, 15, 30, 45], index=[0, 15, 30, 45].index(minute if minute in [0,15,30,45] else 0))
+            m = st.selectbox(
+                f"{label} (Minute)",
+                [0, 15, 30, 45],
+                index=[0, 15, 30, 45].index(minute if minute in [0, 15, 30, 45] else 0),
+            )
         with col3:
-            ap = st.selectbox(f"{label}", ["AM", "PM"], index=0 if ampm=="AM" else 1)
+            ap = st.selectbox(f"{label}", ["AM", "PM"], index=0 if ampm == "AM" else 1)
 
         h24 = h % 12 + (12 if ap == "PM" else 0)
         return time(h24, m)
 
-    # -------- WORKING HOURS --------
+    settings = get_schedule_settings()
+
     st.subheader("Working Hours (12-hour format)")
+    work_start = time_picker("Work Start Time", settings["work_start"])
+    work_end = time_picker("Work End Time", settings["work_end"])
 
-    work_start = time_picker("Work Start Time", st.session_state["schedule_settings"]["work_start"])
-    work_end = time_picker("Work End Time", st.session_state["schedule_settings"]["work_end"])
-
-    # -------- BREAKS --------
     st.subheader("Breaks in the day (optional) — 12-hour format")
 
     colb1, colb2 = st.columns(2)
     with colb1:
-        b1_start = time_picker("Break 1 Start", time(13,0))
+        b1_start = time_picker("Break 1 Start", time(13, 0))
     with colb2:
-        b1_end = time_picker("Break 1 End", time(14,0))
+        b1_end = time_picker("Break 1 End", time(14, 0))
 
     colb3, colb4 = st.columns(2)
     with colb3:
-        b2_start = time_picker("Break 2 Start", time(17,0))
+        b2_start = time_picker("Break 2 Start", time(17, 0))
     with colb4:
-        b2_end = time_picker("Break 2 End", time(17,30))
+        b2_end = time_picker("Break 2 End", time(17, 30))
 
     breaks = []
     if b1_end > b1_start:
@@ -915,14 +934,13 @@ elif page == "AIPlan":
     if b2_end > b2_start:
         breaks.append((b2_start, b2_end))
 
-    # Save settings for AI Chat auto-planning
+    # save so AI Chat uses same settings
     st.session_state["schedule_settings"] = {
         "work_start": work_start,
         "work_end": work_end,
         "breaks": breaks,
     }
 
-    # -------- GENERATE PLAN --------
     if st.button("Generate Plan"):
         df_plan = build_ai_plan(user_email, work_start, work_end, breaks)
         if df_plan.empty:
