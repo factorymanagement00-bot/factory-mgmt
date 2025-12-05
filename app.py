@@ -9,12 +9,15 @@ from datetime import datetime, date, time, timedelta
 # ============================================
 st.set_page_config(page_title="Factory Manager Pro", layout="wide")
 
-PROJECT_ID = "factory-ai-ab9fa"                # <--- your Firebase project id
-API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"  # <--- your Firebase Web API key
+PROJECT_ID = "factory-ai-ab9fa"                         # your Firebase project id
+API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"     # your Firebase Web API key
 
-OPENROUTER_KEY = st.secrets["openrouter_key"]  # set in Streamlit secrets
+OPENROUTER_KEY = st.secrets["openrouter_key"]           # set in Streamlit secrets
 
-BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
+BASE_URL = (
+    f"https://firestore.googleapis.com/v1/projects/"
+    f"{PROJECT_ID}/databases/(default)/documents"
+)
 SIGNUP_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}"
 SIGNIN_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={API_KEY}"
 
@@ -183,6 +186,9 @@ if "schedule_settings" not in st.session_state:
         "work_end": time(17, 0),
         "breaks": [],
     }
+if "ai_history" not in st.session_state:
+    # list of {"user": "...", "assistant": "..."}
+    st.session_state["ai_history"] = []
 
 # ============================================
 # SMALL UTILS
@@ -283,46 +289,68 @@ def stock_summary(email):
     )
 
 # ============================================
-# AI — GENERAL + FACTORY (CHAT AI)
+# AI — GENERAL + FACTORY (CHAT AI WITH MEMORY)
 # ============================================
 def ask_ai(email, query):
     jobs_text = job_summary(email)
     stocks_text = stock_summary(email)
 
-    user_prompt = f"""
-You are a factory management AI assistant.
+    system_prompt = """
+You are FactoryGPT, an expert assistant that helps manage a small factory.
 
+You can:
+- Answer GENERAL questions (life, maths, etc).
+- Help with FACTORY jobs, processes, schedules, and stock.
+- When user asks for a PLAN or SCHEDULE, you will design a practical daily plan.
+- Your tone is friendly but clear.
+"""
+
+    history = st.session_state.get("ai_history", [])
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # add previous conversation
+    for turn in history:
+        messages.append({"role": "user", "content": turn["user"]})
+        messages.append({"role": "assistant", "content": turn["assistant"]})
+
+    # latest question with current data snapshot
+    user_prompt = f"""
 User question:
 {query}
 
-Factory jobs (for reference):
+Current factory snapshot:
+
+Jobs:
 {jobs_text}
 
-Current stock (for reference):
+Stock:
 {stocks_text}
 
-Use the data when the user asks about jobs, stock, planning, schedule, or production.
-Otherwise, answer general questions normally.
+Use factory data when relevant. Otherwise treat it as a normal chat.
 """
+    messages.append({"role": "user", "content": user_prompt})
+
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers={
             "Authorization": f"Bearer {OPENROUTER_KEY}",
             "Content-Type": "application/json",
         },
-        json={
-            "model": "deepseek/deepseek-chat",
-            "messages": [
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": user_prompt},
-            ],
-        },
+        json={"model": "deepseek/deepseek-chat", "messages": messages},
     ).json()
 
     try:
-        return resp["choices"][0]["message"]["content"]
+        answer = resp["choices"][0]["message"]["content"]
     except Exception:
-        return "AI error: " + str(resp)
+        answer = "AI error: " + str(resp)
+
+    # update memory
+    history.append({"user": query, "assistant": answer})
+    # keep last 10 turns
+    st.session_state["ai_history"] = history[-10:]
+
+    return answer
 
 # ============================================
 # PLANNING HELPERS
@@ -358,6 +386,7 @@ def is_planning_query(text: str) -> bool:
         "job plan",
         "make a plan",
         "generate a plan",
+        "generate schedule",
     ]
     return any(k in text for k in keywords)
 
@@ -493,9 +522,14 @@ def build_ai_plan(email, work_start, work_end, breaks):
 # ============================================
 if st.session_state["user"] is None:
     st.markdown('<div class="no-sidebar">', unsafe_allow_html=True)
-    st.markdown('<div class="login-wrapper"><div class="login-card">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="login-wrapper"><div class="login-card">', unsafe_allow_html=True
+    )
 
-    st.markdown('<div class="login-title">🔐 Factory Manager Login</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="login-title">🔐 Factory Manager Login</div>',
+        unsafe_allow_html=True,
+    )
 
     mode = st.selectbox("Mode", ["Login", "Sign Up"])
     email = st.text_input("Email")
@@ -601,7 +635,6 @@ if page == "Dashboard":
         st.dataframe(df, use_container_width=True)
 
 # ---------- ADD JOB ----------
-# ---------- ADD JOB ----------
 elif page == "AddJob":
     st.title("➕ Add New Job")
 
@@ -623,21 +656,15 @@ elif page == "AddJob":
     with col_p2:
         proc_hours = st.number_input("Hours", min_value=0.0, step=0.25)
 
-    # FIXED BUTTON — NO RERUN, JUST UPDATE STATE
+    # Add process button (no rerun, no weird session state)
     with col_p3:
         if st.button("Add Process"):
             if proc_name and proc_hours > 0:
                 st.session_state["job_processes"].append(
                     {"name": proc_name, "hours": proc_hours}
                 )
-                # Clear fields visually
-                st.session_state["clear_process"] = True
-
-    # Auto-clear fields after button
-    if st.session_state.get("clear_process", False):
-        st.session_state["clear_process"] = False
-        st.session_state["text_input_process"] = ""
-        st.session_state["text_input_hours"] = 0.0
+            else:
+                st.warning("Give a process name and hours > 0.")
 
     if st.session_state["job_processes"]:
         st.table(pd.DataFrame(st.session_state["job_processes"]))
@@ -646,7 +673,9 @@ elif page == "AddJob":
 
     st.markdown("### 🧰 Stock Used (optional)")
     stocks = get_user_stocks(user_email)
-    stock_options = ["None"] + [f"{s['name']} ({s.get('category','')}) — {s['quantity_float']}" for s in stocks]
+    stock_options = ["None"] + [
+        f"{s['name']} ({s.get('category','')}) — {s['quantity_float']}" for s in stocks
+    ]
     selected_stock_label = st.selectbox("Select Stock", stock_options)
 
     stock_use_qty = 0.0
@@ -656,7 +685,9 @@ elif page == "AddJob":
         selected_stock = stocks[idx]
         selected_stock_id = selected_stock["id"]
         max_qty = selected_stock["quantity_float"]
-        stock_use_qty = st.number_input("Stock quantity to use", min_value=0.0, max_value=max_qty, step=0.5)
+        stock_use_qty = st.number_input(
+            "Stock quantity to use", min_value=0.0, max_value=max_qty, step=0.5
+        )
 
     if st.button("Save Job"):
         processes_json = json.dumps(st.session_state["job_processes"])
@@ -736,7 +767,13 @@ elif page == "ViewJobs":
         st.info("No jobs yet.")
     else:
         df = pd.DataFrame(jobs)
-        st.dataframe(df, use_container_width=True)
+
+        # remove sensitive / noisy columns from table
+        cols_to_remove = ["user_email", "processes", "created_at"]
+        df_show = df.drop(columns=[c for c in cols_to_remove if c in df.columns])
+
+        st.subheader("All Jobs")
+        st.dataframe(df_show, use_container_width=True)
 
         job_id = st.selectbox("Select Job", df["id"])
         job = df[df["id"] == job_id].iloc[0]
@@ -761,11 +798,10 @@ elif page == "ViewJobs":
             fs_delete("jobs", job_id)
             st.warning("Job deleted!")
 
-# ---------- AI CHAT (TEXT ONLY) ----------
+# ---------- AI CHAT (TEXT ONLY, SMART + MEMORY + AUTO PLAN) ----------
 elif page == "AI":
-    st.title("🤖 AI Chat (text only, with auto plan)")
+    st.title("🤖 AI Chat (smart, with memory + auto plan)")
 
-    # TEXT CHAT
     st.subheader("💬 Type to AI")
     q = st.text_area(
         "Ask anything (general or factory related):",
@@ -783,7 +819,7 @@ elif page == "AI":
             st.write(answer)
 
             if is_planning_query(user_text):
-                st.write("### 📅 AI Plan (auto generated)")
+                st.write("### 📅 AI Plan (auto generated from your data)")
                 settings = get_schedule_settings()
                 df_plan = build_ai_plan(
                     user_email,
@@ -792,9 +828,18 @@ elif page == "AI":
                     settings["breaks"],
                 )
                 if df_plan.empty:
-                    st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
+                    st.warning(
+                        "No processes found. Add processes to jobs first in 'Add Job'."
+                    )
                 else:
                     st.dataframe(df_plan, use_container_width=True)
+
+    if st.session_state["ai_history"]:
+        st.markdown("---")
+        st.subheader("🧾 Conversation Context (last turns)")
+        for turn in st.session_state["ai_history"][-5:]:
+            st.markdown(f"**You:** {turn['user']}")
+            st.markdown(f"**AI:** {turn['assistant']}")
 
 # ---------- AI PRODUCTION PLAN (12-HOUR PICKER) ----------
 elif page == "AIPlan":
@@ -819,10 +864,14 @@ elif page == "AIPlan":
             m = st.selectbox(
                 f"{label} (Minute)",
                 [0, 15, 30, 45],
-                index=[0, 15, 30, 45].index(minute if minute in [0, 15, 30, 45] else 0),
+                index=[0, 15, 30, 45].index(
+                    minute if minute in [0, 15, 30, 45] else 0
+                ),
             )
         with col3:
-            ap = st.selectbox(f"{label}", ["AM", "PM"], index=0 if ampm == "AM" else 1)
+            ap = st.selectbox(
+                f"{label}", ["AM", "PM"], index=0 if ampm == "AM" else 1
+            )
 
         h24 = h % 12 + (12 if ap == "PM" else 0)
         return time(h24, m)
