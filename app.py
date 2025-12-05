@@ -861,6 +861,7 @@ elif page == "AI":
             st.audio(audio_file, format="audio/mp3")
 
 # ---------- AI PRODUCTION PLAN ----------
+# ---------- AI PRODUCTION PLAN (12-HOUR TIME PICKER) ----------
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
 
@@ -869,23 +870,44 @@ elif page == "AIPlan":
         "based on your working hours and breaks."
     )
 
-    settings = get_schedule_settings()
+    # -------- CUSTOM 12-HOUR TIME PICKER --------
+    def time_picker(label, default):
+        col1, col2, col3 = st.columns([2, 2, 1])
 
-    work_start = st.time_input("Work start time", value=settings["work_start"])
-    work_end = st.time_input("Work end time", value=settings["work_end"])
+        hour_12 = default.hour % 12 or 12
+        minute = default.minute
+        ampm = "AM" if default.hour < 12 else "PM"
 
-    st.markdown("#### Breaks in the day (optional)")
-    col_b1s, col_b1e = st.columns(2)
-    with col_b1s:
-        b1_start = st.time_input("Break 1 start", value=time(13, 0))
-    with col_b1e:
-        b1_end = st.time_input("Break 1 end", value=time(14, 0))
+        with col1:
+            h = st.selectbox(f"{label} (Hour)", list(range(1, 13)), index=(hour_12 - 1))
+        with col2:
+            m = st.selectbox(f"{label} (Minute)", [0, 15, 30, 45], index=[0, 15, 30, 45].index(minute if minute in [0,15,30,45] else 0))
+        with col3:
+            ap = st.selectbox(f"{label}", ["AM", "PM"], index=0 if ampm=="AM" else 1)
 
-    col_b2s, col_b2e = st.columns(2)
-    with col_b2s:
-        b2_start = st.time_input("Break 2 start", value=time(17, 0))
-    with col_b2e:
-        b2_end = st.time_input("Break 2 end", value=time(17, 30))
+        h24 = h % 12 + (12 if ap == "PM" else 0)
+        return time(h24, m)
+
+    # -------- WORKING HOURS --------
+    st.subheader("Working Hours (12-hour format)")
+
+    work_start = time_picker("Work Start Time", st.session_state["schedule_settings"]["work_start"])
+    work_end = time_picker("Work End Time", st.session_state["schedule_settings"]["work_end"])
+
+    # -------- BREAKS --------
+    st.subheader("Breaks in the day (optional) — 12-hour format")
+
+    colb1, colb2 = st.columns(2)
+    with colb1:
+        b1_start = time_picker("Break 1 Start", time(13,0))
+    with colb2:
+        b1_end = time_picker("Break 1 End", time(14,0))
+
+    colb3, colb4 = st.columns(2)
+    with colb3:
+        b2_start = time_picker("Break 2 Start", time(17,0))
+    with colb4:
+        b2_end = time_picker("Break 2 End", time(17,30))
 
     breaks = []
     if b1_end > b1_start:
@@ -893,13 +915,14 @@ elif page == "AIPlan":
     if b2_end > b2_start:
         breaks.append((b2_start, b2_end))
 
-    # save so AI Chat uses same settings
+    # Save settings for AI Chat auto-planning
     st.session_state["schedule_settings"] = {
         "work_start": work_start,
         "work_end": work_end,
         "breaks": breaks,
     }
 
+    # -------- GENERATE PLAN --------
     if st.button("Generate Plan"):
         df_plan = build_ai_plan(user_email, work_start, work_end, breaks)
         if df_plan.empty:
@@ -908,8 +931,8 @@ elif page == "AIPlan":
             st.success("Plan generated!")
             st.dataframe(df_plan, use_container_width=True)
     else:
-        records = st.session_state.get("last_plan_df", [])
-        if records:
-            st.dataframe(pd.DataFrame(records), use_container_width=True)
+        existing = st.session_state.get("last_plan_df", [])
+        if existing:
+            st.dataframe(pd.DataFrame(existing), use_container_width=True)
         else:
             st.info("Set your working hours and click 'Generate Plan'.")
