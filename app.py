@@ -229,6 +229,30 @@ def fs_delete(col, id):
     st.cache_data.clear()
 
 # ============================================
+# STOCK HELPERS
+# ============================================
+def get_user_stocks(email):
+    stocks = [s for s in fs_get("stocks") if s.get("user_email") == email]
+    # convert quantity string to float
+    for s in stocks:
+        s["quantity_float"] = safe_float(s.get("quantity", 0))
+    return stocks
+
+def adjust_stock_after_job(stock_id, used_qty):
+    if not stock_id or used_qty <= 0:
+        return
+    stocks = fs_get("stocks")
+    for s in stocks:
+        if s["id"] == stock_id:
+            current = safe_float(s.get("quantity", 0))
+            remaining = current - used_qty
+            if remaining <= 0:
+                fs_delete("stocks", stock_id)
+            else:
+                fs_update("stocks", stock_id, {"quantity": remaining})
+            break
+
+# ============================================
 # AI — GENERAL + FACTORY
 # ============================================
 def job_summary(email):
@@ -236,7 +260,7 @@ def job_summary(email):
     if not jobs:
         return ""
     return "\n".join(
-        f"- {j['job_name']} | {j['status']} | ₹{j['amount']}"
+        f"- {j['job_name']} | {j['status']} | Qty {j.get('quantity','')} | ₹{j['amount']}"
         for j in jobs
     )
 
@@ -277,9 +301,9 @@ Factory jobs for reference (only use if the question is about work, production, 
         return "AI error: " + str(resp)
 
 # ============================================
-# AI PLAN GENERATION (NO LLM, SMART SCHEDULER)
+# AI PLAN GENERATION (SIMPLE SCHEDULER)
 # ============================================
-DAILY_HOURS = 8  # number of working hours per day
+DAILY_HOURS = 8  # working hours per day
 
 def parse_processes(processes_str):
     try:
@@ -298,9 +322,9 @@ def build_ai_plan(email):
         job_name = j.get("job_name", "")
         due_str = j.get("due_date", "")
         try:
-            due = date.fromisoformat(due_str) if due_str else None
+            due_dt = date.fromisoformat(due_str) if due_str else None
         except Exception:
-            due = None
+            due_dt = None
 
         processes = parse_processes(j.get("processes", "[]"))
         for p in processes:
@@ -313,34 +337,31 @@ def build_ai_plan(email):
                     "job": job_name,
                     "process": pname,
                     "hours": hrs,
-                    "due_date": due,
+                    "due_date": due_dt,
                 }
             )
 
     if not tasks:
         return pd.DataFrame()
 
-    # sort by due date (None last), then by job
     tasks.sort(key=lambda x: (x["due_date"] or date(2100, 1, 1), x["job"]))
 
     rows = []
     current_day = 1
-    remaining_hours = DAILY_HOURS
+    remaining = DAILY_HOURS
     today = date.today()
 
     for t in tasks:
         hrs = t["hours"]
-        if hrs > remaining_hours:  # move to next day
+        if hrs > remaining:
             current_day += 1
-            remaining_hours = DAILY_HOURS
-
-        plan_date = today + timedelta(days=current_day - 1)
-        remaining_hours -= hrs
-
+            remaining = DAILY_HOURS
+        planned_date = today + timedelta(days=current_day - 1)
+        remaining -= hrs
         rows.append(
             {
                 "Day": f"Day {current_day}",
-                "Planned Date": plan_date.isoformat(),
+                "Planned Date": planned_date.isoformat(),
                 "Job": t["job"],
                 "Process": t["process"],
                 "Hours": hrs,
@@ -421,6 +442,7 @@ with st.sidebar:
 
     nav_btn("Dashboard", "🏠", "Dashboard")
     nav_btn("Add Job", "➕", "AddJob")
+    nav_btn("Add Stock", "📦", "AddStock")
     nav_btn("View Jobs", "📋", "ViewJobs")
     nav_btn("AI Chat", "🤖", "AI")
     nav_btn("AI Plan", "📅", "AIPlan")
@@ -472,32 +494,47 @@ elif page == "AddJob":
     client_name = st.text_input("Client Name")
     phone = st.text_input("Phone")
     amount = st.number_input("Amount", min_value=0)
+    quantity = st.number_input("Quantity (pieces / units)", min_value=1, step=1)
     job_type = st.text_input("Job Type")
     status = st.selectbox("Status", ["Pending", "In Progress", "Completed"])
     due_date = st.date_input("Due Date", value=date.today())
 
     st.markdown("### 🧩 Job Processes")
 
-    # Process builder
+    # Process builder (NO session_state crash)
     col_p1, col_p2, col_p3 = st.columns([3, 1, 1])
-    with col_p1:
-        proc_name = st.text_input("Process Name", key="proc_name")
-    with col_p2:
-        proc_hours = st.number_input("Hours", min_value=0.0, step=0.25, key="proc_hours")
+    proc_name = st.text_input("Process Name", key="proc_name_input")
+    proc_hours = st.number_input("Hours", min_value=0.0, step=0.25, key="proc_hours_input")
+
     with col_p3:
         if st.button("Add Process"):
             if proc_name and proc_hours > 0:
                 st.session_state["job_processes"].append(
                     {"name": proc_name, "hours": proc_hours}
                 )
-                st.session_state["proc_name"] = ""
-                st.session_state["proc_hours"] = 0.0
+                # clear inputs safely
+                st.session_state["proc_name_input"] = ""
+                st.session_state["proc_hours_input"] = 0.0
+                st.rerun()
 
-    # Show current processes
     if st.session_state["job_processes"]:
         st.table(pd.DataFrame(st.session_state["job_processes"]))
     else:
         st.caption("No processes added yet. Add steps above.")
+
+    st.markdown("### 🧰 Stock Used (optional)")
+    stocks = get_user_stocks(user_email)
+    stock_options = ["None"] + [f"{s['name']} ({s.get('category','')}) — {s['quantity_float']}" for s in stocks]
+    selected_stock_label = st.selectbox("Select Stock", stock_options)
+
+    stock_use_qty = 0.0
+    selected_stock_id = ""
+    if selected_stock_label != "None":
+        idx = stock_options.index(selected_stock_label) - 1
+        selected_stock = stocks[idx]
+        selected_stock_id = selected_stock["id"]
+        max_qty = selected_stock["quantity_float"]
+        stock_use_qty = st.number_input("Stock quantity to use", min_value=0.0, max_value=max_qty, step=0.5)
 
     if st.button("Save Job"):
         processes_json = json.dumps(st.session_state["job_processes"])
@@ -508,6 +545,7 @@ elif page == "AddJob":
                 "client_name": client_name,
                 "phone": phone,
                 "amount": amount,
+                "quantity": quantity,
                 "job_type": job_type,
                 "status": status,
                 "notes": "",
@@ -515,11 +553,58 @@ elif page == "AddJob":
                 "created_at": datetime.utcnow().isoformat(),
                 "due_date": due_date.isoformat(),
                 "processes": processes_json,
+                "stock_id": selected_stock_id,
+                "stock_used": stock_use_qty,
             },
         )
+        # adjust stock
+        if selected_stock_id and stock_use_qty > 0:
+            adjust_stock_after_job(selected_stock_id, stock_use_qty)
+
         st.session_state["job_processes"] = []
         st.cache_data.clear()
         st.success("Job with processes saved!")
+
+# ---------- Add Stock ----------
+elif page == "AddStock":
+    st.title("📦 Add / Manage Stock")
+
+    st.subheader("Add New Stock Item")
+    s_name = st.text_input("Stock Name")
+    s_category = st.text_input("Category")
+    s_qty = st.number_input("Quantity / Weight", min_value=0.0, step=0.5)
+
+    if st.button("Save Stock"):
+        fs_add(
+            "stocks",
+            {
+                "name": s_name,
+                "category": s_category,
+                "quantity": s_qty,
+                "user_email": user_email,
+                "created_at": datetime.utcnow().isoformat(),
+            },
+        )
+        st.success("Stock saved!")
+        st.cache_data.clear()
+
+    st.subheader("Current Stock")
+    stocks = get_user_stocks(user_email)
+    if not stocks:
+        st.info("No stock items yet.")
+    else:
+        df_s = pd.DataFrame(
+            [
+                {
+                    "Name": s["name"],
+                    "Category": s.get("category", ""),
+                    "Quantity": s["quantity_float"],
+                    "id": s["id"],
+                }
+                for s in stocks
+            ]
+        )
+        st.dataframe(df_s.drop(columns=["id"]), use_container_width=True)
 
 # ---------- View & Edit Jobs ----------
 elif page == "ViewJobs":
@@ -572,7 +657,7 @@ elif page == "AI":
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
 
-    st.write("This will use all jobs, their processes, durations, and due dates to build a simple schedule.")
+    st.write("This uses all jobs, their processes, durations, and due dates to build a simple schedule.")
     if st.button("Generate Plan"):
         df_plan = build_ai_plan(user_email)
         if df_plan.empty:
@@ -581,7 +666,6 @@ elif page == "AIPlan":
             st.success("Plan generated!")
             st.dataframe(df_plan, use_container_width=True)
     else:
-        # If we already generated a plan in this session, show it
         records = st.session_state.get("last_plan_df", [])
         if records:
             st.dataframe(pd.DataFrame(records), use_container_width=True)
