@@ -601,6 +601,7 @@ if page == "Dashboard":
         st.dataframe(df, use_container_width=True)
 
 # ---------- ADD JOB ----------
+# ---------- ADD JOB ----------
 elif page == "AddJob":
     st.title("➕ Add New Job")
 
@@ -615,20 +616,28 @@ elif page == "AddJob":
 
     st.markdown("### 🧩 Job Processes")
 
-    # safer: do NOT mutate widget keys in session_state
     col_p1, col_p2, col_p3 = st.columns([3, 1, 1])
     with col_p1:
         proc_name = st.text_input("Process Name")
+
     with col_p2:
         proc_hours = st.number_input("Hours", min_value=0.0, step=0.25)
 
+    # FIXED BUTTON — NO RERUN, JUST UPDATE STATE
     with col_p3:
         if st.button("Add Process"):
             if proc_name and proc_hours > 0:
                 st.session_state["job_processes"].append(
                     {"name": proc_name, "hours": proc_hours}
                 )
-                st.experimental_rerun()
+                # Clear fields visually
+                st.session_state["clear_process"] = True
+
+    # Auto-clear fields after button
+    if st.session_state.get("clear_process", False):
+        st.session_state["clear_process"] = False
+        st.session_state["text_input_process"] = ""
+        st.session_state["text_input_hours"] = 0.0
 
     if st.session_state["job_processes"]:
         st.table(pd.DataFrame(st.session_state["job_processes"]))
