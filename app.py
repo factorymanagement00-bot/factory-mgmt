@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import json
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, time, timedelta
 from io import BytesIO
 
 from audio_recorder_streamlit import audio_recorder
@@ -14,11 +14,11 @@ from openai import OpenAI
 # ============================================
 st.set_page_config(page_title="Factory Manager Pro", layout="wide")
 
-PROJECT_ID = "factory-ai-ab9fa"
-API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"          # <-- put your Firebase Web API key here
+PROJECT_ID = "factory-ai-ab9fa"                # <--- your Firebase project id
+API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"             # <--- your Firebase Web API key
 
-OPENROUTER_KEY = st.secrets["openrouter_key"]          # <-- set in Streamlit secrets
-OPENAI_API_KEY = st.secrets.get("openai_api_key", None)  # for voice STT
+OPENROUTER_KEY = st.secrets["openrouter_key"]                 # set in Streamlit secrets
+OPENAI_API_KEY = st.secrets.get("openai_api_key", None)       # for voice STT
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
@@ -35,7 +35,7 @@ html, body, [class*="css"] {
     font-family: 'Inter', sans-serif !important;
 }
 
-/* Hide sidebar container when logged out */
+/* Hide sidebar when logged out */
 .no-sidebar [data-testid="stSidebar"] {
     display: none !important;
 }
@@ -61,14 +61,12 @@ html, body, [class*="css"] {
     margin-bottom: 20px;
 }
 
-/* SIDEBAR BASE */
+/* SIDEBAR */
 [data-testid="stSidebar"] {
     background: #020617 !important;
     padding: 20px 16px !important;
     border-right: 1px solid rgba(30,64,175,0.7);
 }
-
-/* Sidebar header */
 .sidebar-header {
     display: flex;
     align-items: center;
@@ -81,8 +79,7 @@ html, body, [class*="css"] {
     color: #e5e7eb;
     line-height: 1.1;
 }
-
-/* Toggle button */
+/* Toggle */
 .collapse-btn button {
     background: #020617 !important;
     border-radius: 999px !important;
@@ -156,24 +153,24 @@ html, body, [class*="css"] {
 """
 st.markdown(base_css, unsafe_allow_html=True)
 
-# ============================================
-# COLLAPSE STATE & EXTRA CSS
-# ============================================
+# Sidebar collapse CSS
 if "sidebar_collapsed" not in st.session_state:
     st.session_state["sidebar_collapsed"] = False
 
 if st.session_state["sidebar_collapsed"]:
-    collapsed_css = """
-    <style>
-    .sidebar-title-text { display: none !important; }
-    .navbox button {
-        text-align: center !important;
-        padding-left: 0 !important;
-        padding-right: 0 !important;
-    }
-    </style>
-    """
-    st.markdown(collapsed_css, unsafe_allow_html=True)
+    st.markdown(
+        """
+        <style>
+        .sidebar-title-text { display: none !important; }
+        .navbox button {
+            text-align: center !important;
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # ============================================
 # SESSION INIT
@@ -188,7 +185,16 @@ if "last_ai_answer" not in st.session_state:
     st.session_state["last_ai_answer"] = ""
 if "last_plan_df" not in st.session_state:
     st.session_state["last_plan_df"] = []
+if "schedule_settings" not in st.session_state:
+    st.session_state["schedule_settings"] = {
+        "work_start": time(9, 0),
+        "work_end": time(17, 0),
+        "breaks": [],
+    }
 
+# ============================================
+# SMALL UTILS
+# ============================================
 def safe_int(v):
     try:
         return int(v)
@@ -315,26 +321,22 @@ Factory jobs for reference (only use if the question is about work, production, 
 # VOICE HELPERS (STT + TTS)
 # ============================================
 def speech_to_text(audio_bytes: bytes):
-    """Convert recorded audio to text using OpenAI Whisper."""
     if openai_client is None:
         return None, "No OPENAI_API_KEY set in secrets."
 
     try:
         with open("voice_input.wav", "wb") as f:
             f.write(audio_bytes)
-
         with open("voice_input.wav", "rb") as audio_file:
             result = openai_client.audio.transcriptions.create(
                 model="whisper-1",
                 file=audio_file,
             )
-        text = result.text
-        return text, None
+        return result.text, None
     except Exception as e:
         return None, str(e)
 
 def text_to_speech_bytes(text: str):
-    """Convert AI text reply to MP3 audio bytes using gTTS."""
     mp3 = BytesIO()
     tts = gTTS(text=text, lang="en")
     tts.write_to_fp(mp3)
@@ -342,10 +344,8 @@ def text_to_speech_bytes(text: str):
     return mp3
 
 # ============================================
-# AI PLAN GENERATION (PLANNING AI)
+# PLANNING HELPERS
 # ============================================
-DAILY_HOURS = 8  # working hours per day
-
 def parse_processes(processes_str):
     try:
         data = json.loads(processes_str)
@@ -355,7 +355,35 @@ def parse_processes(processes_str):
         pass
     return []
 
-def build_ai_plan(email):
+def get_schedule_settings():
+    return st.session_state["schedule_settings"]
+
+def is_planning_query(text: str) -> bool:
+    if not text:
+        return False
+    text = text.lower()
+    keywords = [
+        "plan",
+        "planning",
+        "schedule",
+        "today work",
+        "tomorrow work",
+        "factory plan",
+        "production plan",
+        "due date",
+        "priority",
+        "what should i do first",
+        "work plan",
+        "job plan",
+    ]
+    return any(k in text for k in keywords)
+
+def build_ai_plan(email, work_start, work_end, breaks):
+    """
+    Build a time-based plan using daily working hours + breaks.
+    breaks: list of (time_start, time_end)
+    """
+
     jobs = [j for j in fs_get("jobs") if j.get("user_email") == email]
     tasks = []
 
@@ -385,58 +413,100 @@ def build_ai_plan(email):
     if not tasks:
         return pd.DataFrame()
 
+    # sort by due date then job
     tasks.sort(key=lambda x: (x["due_date"] or date(2100, 1, 1), x["job"]))
 
+    def next_work_start(current_dt):
+        """Move current_dt to next working moment (respecting breaks & hours)."""
+        while True:
+            day = current_dt.date()
+            day_start = datetime.combine(day, work_start)
+            day_end = datetime.combine(day, work_end)
+
+            # before work -> jump to start
+            if current_dt < day_start:
+                current_dt = day_start
+
+            # after work -> next day
+            if current_dt >= day_end:
+                current_dt = datetime.combine(day + timedelta(days=1), work_start)
+                continue
+
+            todays_breaks = [
+                (datetime.combine(day, b_start), datetime.combine(day, b_end))
+                for (b_start, b_end) in breaks
+                if b_start and b_end and b_end > b_start
+            ]
+
+            moved = False
+            for b_start_dt, b_end_dt in todays_breaks:
+                if b_start_dt <= current_dt < b_end_dt:
+                    current_dt = b_end_dt
+                    moved = True
+                    break
+
+            if moved:
+                continue
+
+            return current_dt
+
     rows = []
-    current_day = 1
-    remaining = DAILY_HOURS
     today = date.today()
+    current_dt = datetime.combine(today, work_start)
+    day_index_by_date = {}
+
+    def day_label(d):
+        if d not in day_index_by_date:
+            day_index_by_date[d] = len(day_index_by_date) + 1
+        return f"Day {day_index_by_date[d]}"
 
     for t in tasks:
-        hrs = t["hours"]
-        if hrs > remaining:
-            current_day += 1
-            remaining = DAILY_HOURS
-        planned_date = today + timedelta(days=current_day - 1)
-        remaining -= hrs
-        rows.append(
-            {
-                "Day": f"Day {current_day}",
-                "Planned Date": planned_date.isoformat(),
-                "Job": t["job"],
-                "Process": t["process"],
-                "Hours": hrs,
-                "Due Date": t["due_date"].isoformat() if t["due_date"] else "",
-            }
-        )
+        hours_remaining = float(t["hours"])
+        while hours_remaining > 1e-9:
+            current_dt = next_work_start(current_dt)
+            d = current_dt.date()
+            day_end = datetime.combine(d, work_end)
+
+            todays_breaks = [
+                (datetime.combine(d, b_start), datetime.combine(d, b_end))
+                for (b_start, b_end) in breaks
+                if b_start and b_end and b_end > b_start
+            ]
+
+            boundary = day_end
+            for b_start_dt, b_end_dt in todays_breaks:
+                if current_dt < b_start_dt < boundary:
+                    boundary = b_start_dt
+
+            max_avail_hours = (boundary - current_dt).total_seconds() / 3600.0
+            if max_avail_hours <= 1e-9:
+                current_dt = boundary
+                continue
+
+            slot_hours = min(hours_remaining, max_avail_hours)
+            end_dt = current_dt + timedelta(hours=slot_hours)
+
+            rows.append(
+                {
+                    "Day": day_label(d),
+                    "Planned Start": current_dt.strftime("%Y-%m-%d %H:%M"),
+                    "Planned End": end_dt.strftime("%Y-%m-%d %H:%M"),
+                    "Job": t["job"],
+                    "Process": t["process"],
+                    "Hours": round(slot_hours, 2),
+                    "Due Date": t["due_date"].isoformat() if t["due_date"] else "",
+                }
+            )
+
+            hours_remaining -= slot_hours
+            current_dt = end_dt
 
     df = pd.DataFrame(rows)
     st.session_state["last_plan_df"] = df.to_dict("records")
     return df
 
-def is_planning_query(text: str) -> bool:
-    """Detect if user is asking for planning/schedule so we auto-generate plan."""
-    if not text:
-        return False
-    text = text.lower()
-    keywords = [
-        "plan",
-        "planning",
-        "schedule",
-        "today work",
-        "tomorrow work",
-        "factory plan",
-        "production plan",
-        "due date",
-        "priority",
-        "what should i do first",
-        "work plan",
-        "job plan",
-    ]
-    return any(k in text for k in keywords)
-
 # ============================================
-# LOGIN PAGE (CENTERED)
+# LOGIN PAGE
 # ============================================
 if st.session_state["user"] is None:
     st.markdown('<div class="no-sidebar">', unsafe_allow_html=True)
@@ -472,7 +542,7 @@ if st.session_state["user"] is None:
     st.stop()
 
 # ============================================
-# SIDEBAR (CLEAN COLLAPSE: ICONS ONLY)
+# SIDEBAR
 # ============================================
 with st.sidebar:
     col_toggle, col_title = st.columns([1, 4])
@@ -506,7 +576,7 @@ with st.sidebar:
     nav_btn("Add Stock", "📦", "AddStock")
     nav_btn("View Jobs", "📋", "ViewJobs")
     nav_btn("AI Chat + Voice", "🤖", "AI")
-    nav_btn("AI Plan", "📅", "AIPlan")
+    nav_btn("AI Production Plan", "📅", "AIPlan")
 
     st.markdown('<div class="logout-btn">', unsafe_allow_html=True)
     if st.button("Logout"):
@@ -521,7 +591,7 @@ with st.sidebar:
 page = st.session_state["page"]
 user_email = st.session_state["user"]
 
-# ---------- Dashboard ----------
+# ---------- DASHBOARD ----------
 if page == "Dashboard":
     st.title("📊 Dashboard")
 
@@ -547,7 +617,7 @@ if page == "Dashboard":
         st.subheader("All Jobs")
         st.dataframe(df, use_container_width=True)
 
-# ---------- Add Job ----------
+# ---------- ADD JOB ----------
 elif page == "AddJob":
     st.title("➕ Add New Job")
 
@@ -623,7 +693,7 @@ elif page == "AddJob":
         st.cache_data.clear()
         st.success("Job with processes saved!")
 
-# ---------- Add Stock ----------
+# ---------- ADD STOCK ----------
 elif page == "AddStock":
     st.title("📦 Add / Manage Stock")
 
@@ -664,7 +734,7 @@ elif page == "AddStock":
         )
         st.dataframe(df_s.drop(columns=["id"]), use_container_width=True)
 
-# ---------- View & Edit Jobs ----------
+# ---------- VIEW JOBS ----------
 elif page == "ViewJobs":
     st.title("📋 Manage Jobs")
 
@@ -698,11 +768,11 @@ elif page == "ViewJobs":
             fs_delete("jobs", job_id)
             st.warning("Job deleted!")
 
-# ---------- AI CHAT + VOICE + AUTO PLANNING ----------
+# ---------- AI CHAT + VOICE ----------
 elif page == "AI":
     st.title("🤖 AI Chat + Voice (with Auto Plan)")
 
-    # --- TEXT INPUT ---
+    # TEXT CHAT
     st.subheader("💬 Type to AI")
     q = st.text_area(
         "Ask anything (general or factory related):",
@@ -719,10 +789,15 @@ elif page == "AI":
             st.write("### 🧠 AI Answer")
             st.write(answer)
 
-            # Auto planning if it's a planning type query
             if is_planning_query(user_text):
                 st.write("### 📅 AI Plan (auto generated)")
-                df_plan = build_ai_plan(user_email)
+                settings = get_schedule_settings()
+                df_plan = build_ai_plan(
+                    user_email,
+                    settings["work_start"],
+                    settings["work_end"],
+                    settings["breaks"],
+                )
                 if df_plan.empty:
                     st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
                 else:
@@ -730,10 +805,9 @@ elif page == "AI":
 
     st.markdown("---")
 
-    # --- VOICE INPUT ---
+    # VOICE CHAT
     st.subheader("🎤 Talk to AI (Voice)")
-
-    st.caption("Click button below, speak, then stop. Then click 'Send Voice to AI'.")
+    st.caption("Click to record, speak, then click again to stop. Then press 'Send Voice to AI'.")
     audio_bytes = audio_recorder(
         text="Click to record / stop",
         pause_threshold=2.0,
@@ -755,7 +829,7 @@ elif page == "AI":
             if err:
                 st.error("Speech-to-text error: " + err)
             else:
-                st.write(f"### 📝 You said:")
+                st.write("### 📝 You said:")
                 st.write(text)
 
                 with st.spinner("AI thinking..."):
@@ -764,16 +838,20 @@ elif page == "AI":
                 st.write("### 🧠 AI Answer")
                 st.write(answer)
 
-                # Auto planning on voice too
                 if is_planning_query(text):
                     st.write("### 📅 AI Plan (auto generated)")
-                    df_plan = build_ai_plan(user_email)
+                    settings = get_schedule_settings()
+                    df_plan = build_ai_plan(
+                        user_email,
+                        settings["work_start"],
+                        settings["work_end"],
+                        settings["breaks"],
+                    )
                     if df_plan.empty:
                         st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
                     else:
                         st.dataframe(df_plan, use_container_width=True)
 
-    # --- VOICE OUTPUT FOR LAST ANSWER ---
     if st.session_state["last_ai_answer"]:
         st.markdown("---")
         st.subheader("🔊 Listen to AI Answer")
@@ -782,13 +860,48 @@ elif page == "AI":
                 audio_file = text_to_speech_bytes(st.session_state["last_ai_answer"])
             st.audio(audio_file, format="audio/mp3")
 
-# ---------- AI Plan PAGE (Manual) ----------
+# ---------- AI PRODUCTION PLAN ----------
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
 
-    st.write("This uses all jobs, their processes, durations, and due dates to build a schedule table.")
+    st.write(
+        "This uses all jobs, their processes, durations, and due dates to build a schedule "
+        "based on your working hours and breaks."
+    )
+
+    settings = get_schedule_settings()
+
+    work_start = st.time_input("Work start time", value=settings["work_start"])
+    work_end = st.time_input("Work end time", value=settings["work_end"])
+
+    st.markdown("#### Breaks in the day (optional)")
+    col_b1s, col_b1e = st.columns(2)
+    with col_b1s:
+        b1_start = st.time_input("Break 1 start", value=time(13, 0))
+    with col_b1e:
+        b1_end = st.time_input("Break 1 end", value=time(14, 0))
+
+    col_b2s, col_b2e = st.columns(2)
+    with col_b2s:
+        b2_start = st.time_input("Break 2 start", value=time(17, 0))
+    with col_b2e:
+        b2_end = st.time_input("Break 2 end", value=time(17, 30))
+
+    breaks = []
+    if b1_end > b1_start:
+        breaks.append((b1_start, b1_end))
+    if b2_end > b2_start:
+        breaks.append((b2_start, b2_end))
+
+    # save so AI Chat uses same settings
+    st.session_state["schedule_settings"] = {
+        "work_start": work_start,
+        "work_end": work_end,
+        "breaks": breaks,
+    }
+
     if st.button("Generate Plan"):
-        df_plan = build_ai_plan(user_email)
+        df_plan = build_ai_plan(user_email, work_start, work_end, breaks)
         if df_plan.empty:
             st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
         else:
@@ -799,4 +912,4 @@ elif page == "AIPlan":
         if records:
             st.dataframe(pd.DataFrame(records), use_container_width=True)
         else:
-            st.info("Click 'Generate Plan' to create a schedule.")
+            st.info("Set your working hours and click 'Generate Plan'.")
