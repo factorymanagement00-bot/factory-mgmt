@@ -502,63 +502,6 @@ elif page=="AddJob":
         st.success("Job with processes and stocks saved!")
 
 # ----- ADD STOCK (MULTI SIZE) -----
-elif page=="AddStock":
-    st.title("📦 Add / Manage Stock")
-    st.subheader("Add New Stock Item")
-    s_name=st.text_input("Stock Name")
-    s_category=st.text_input("Category")
-
-    st.markdown("### Sizes for this stock")
-    c1,c2,c3=st.columns([2,2,1])
-    with c1:
-        size_val=st.text_input("Size",key="new_stock_size")
-    with c2:
-        qty_val=st.number_input("Quantity / Weight",min_value=0.0,step=0.5,key="new_stock_qty")
-    with c3:
-        st.write("")
-        if st.button("Add Size"):
-            if size_val and qty_val>0:
-                ss["new_stock_sizes"].append({"size":size_val,"qty":qty_val})
-            else:
-                st.warning("Enter size and quantity > 0 before adding.")
-
-    if ss["new_stock_sizes"]:
-        st.table(pd.DataFrame(ss["new_stock_sizes"]))
-    else:
-        st.caption("No sizes added yet. Add at least one size before saving stock.")
-
-    if st.button("Save Stock"):
-        if not s_name:
-            st.error("Stock name is required.")
-        elif not ss["new_stock_sizes"]:
-            st.error("Add at least one size for this stock.")
-        else:
-            fs_add("stocks",{
-                "name":s_name,
-                "category":s_category,
-                "sizes":json.dumps(ss["new_stock_sizes"]),
-                "user_email":user_email,
-                "created_at":datetime.utcnow().isoformat(),
-            })
-            ss["new_stock_sizes"]=[]
-            st.success("Stock saved!")
-            st.cache_data.clear()
-
-    st.subheader("Current Stock (per size)")
-    stocks=get_user_stocks(user_email)
-    if not stocks:
-        st.info("No stock items yet.")
-    else:
-        rows=[]
-        for s in stocks:
-            for z in s["sizes_list"]:
-                rows.append({
-                    "Name":s["name"],
-                    "Category":s.get("category",""),
-                    "Size":z.get("size",""),
-                    "Quantity":z.get("qty",0),
-                })
-        st.dataframe(pd.DataFrame(rows),use_container_width=True)
 
 # ----- VIEW JOBS -----
 elif page=="ViewJobs":
@@ -580,7 +523,110 @@ elif page=="ViewJobs":
             ["Pending","In Progress","Completed"],
             index=["Pending","In Progress","Completed"].index(job["status"]),
         )
-        new_notes=st.text_area("Notes",job.get("notes",""))
+        new_notes=st.text_area("Notes",job.get("notes",""))# ---------- ADD STOCK (WITH SIZES + DELETE STOCK) ----------
+elif page == "AddStock":
+    st.title("📦 Add / Manage Stock")
+
+    st.subheader("Add New Stock Item")
+
+    # Basic fields
+    s_name = st.text_input("Stock Name")
+    s_category = st.text_input("Category")
+
+    # Temp storage for sizes
+    if "temp_sizes" not in st.session_state:
+        st.session_state["temp_sizes"] = []
+
+    st.markdown("### ➕ Add Size to Stock")
+    colz1, colz2, colz3 = st.columns([2, 2, 1])
+
+    with colz1:
+        new_size = st.text_input("Size", key="size_input")
+    with colz2:
+        new_qty = st.number_input("Qty", key="qty_input", min_value=0.0, step=0.5)
+    with colz3:
+        st.write("")
+        if st.button("Add Size"):
+            if new_size and new_qty > 0:
+                st.session_state["temp_sizes"].append({"size": new_size, "qty": new_qty})
+            else:
+                st.warning("Enter valid size and quantity.")
+
+    # Show sizes added
+    if st.session_state["temp_sizes"]:
+        st.markdown("### 📄 Sizes Added")
+        st.table(pd.DataFrame(st.session_state["temp_sizes"]))
+
+    # Save stock with sizes
+    if st.button("Save Stock"):
+        if not s_name:
+            st.error("Stock name required.")
+        elif not st.session_state["temp_sizes"]:
+            st.error("Add at least one size.")
+        else:
+            fs_add(
+                "stocks",
+                {
+                    "name": s_name,
+                    "category": s_category,
+                    "sizes": json.dumps(st.session_state["temp_sizes"]),
+                    "user_email": user_email,
+                    "created_at": datetime.utcnow().isoformat(),
+                },
+            )
+            st.success("Stock saved!")
+
+            # Reset temp sizes
+            st.session_state["temp_sizes"] = []
+            st.cache_data.clear()
+            st.rerun()
+
+    # ---------------- CURRENT STOCK DISPLAY ----------------
+    st.markdown("---")
+    st.subheader("Current Stock")
+
+    stocks = get_user_stocks(user_email)
+
+    # Preprocess stock sizes
+    for s in stocks:
+        try:
+            s["sizes_list"] = json.loads(s.get("sizes", "[]"))
+        except:
+            s["sizes_list"] = []
+
+    if not stocks:
+        st.info("No stock items yet.")
+    else:
+        rows = []
+        for s in stocks:
+            for z in s["sizes_list"]:
+                rows.append({
+                    "Name": s["name"],
+                    "Category": s.get("category", ""),
+                    "Size": z.get("size", ""),
+                    "Quantity": z.get("qty", 0),
+                    "StockID": s["id"],
+                })
+
+        df_stock = pd.DataFrame(rows)
+        st.dataframe(df_stock[["Name", "Category", "Size", "Quantity"]], use_container_width=True)
+
+        # ---------------- DELETE STOCK ----------------
+        st.markdown("### 🗑️ Delete Entire Stock")
+
+        delete_options = [f"{s['name']} ({s.get('category','')})" for s in stocks]
+        selected_delete = st.selectbox("Select stock to delete", ["None"] + delete_options)
+
+        if selected_delete != "None":
+            idx = delete_options.index(selected_delete)
+            delete_id = stocks[idx]["id"]
+
+            if st.button("Delete Selected Stock"):
+                fs_delete("stocks", delete_id)
+                st.success("Stock deleted successfully!")
+                st.cache_data.clear()
+                st.rerun()
+
         if st.button("Update Job"):
             fs_update("jobs",job_id,{"amount":new_amount,"status":new_status,"notes":new_notes})
             st.success("Job updated!")
