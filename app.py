@@ -787,12 +787,18 @@ elif page == "AddJob":
         st.success("Job with processes saved!")
 
 # ---------- ADD STOCK ----------
+# ---------- ADD STOCK ----------
 elif page == "AddStock":
     st.title("📦 Add / Manage Stock")
 
     st.subheader("Add New Stock Item")
+
     s_name = st.text_input("Stock Name")
     s_category = st.text_input("Category")
+
+    # ⭐ NEW SIZE FIELD
+    s_size = st.text_input("Size (optional)")
+
     s_qty = st.number_input("Quantity / Weight", min_value=0.0, step=0.5)
 
     if st.button("Save Stock"):
@@ -801,6 +807,7 @@ elif page == "AddStock":
             {
                 "name": s_name,
                 "category": s_category,
+                "size": s_size,   # ⭐ save size
                 "quantity": s_qty,
                 "user_email": user_email,
                 "created_at": datetime.utcnow().isoformat(),
@@ -819,6 +826,7 @@ elif page == "AddStock":
                 {
                     "Name": s["name"],
                     "Category": s.get("category", ""),
+                    "Size": s.get("size", ""),        # ⭐ show size
                     "Quantity": s["quantity_float"],
                     "id": s["id"],
                 }
@@ -826,6 +834,7 @@ elif page == "AddStock":
             ]
         )
         st.dataframe(df_s.drop(columns=["id"]), use_container_width=True)
+
 
 # ---------- VIEW JOBS ----------
 elif page == "ViewJobs":
