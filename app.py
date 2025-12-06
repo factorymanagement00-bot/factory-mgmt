@@ -4,7 +4,6 @@ import pandas as pd
 import json
 import os
 from datetime import datetime, date, time, timedelta
-from fpdf import FPDF  # <- for PDF export
 
 # ============================================
 # APP SETTINGS
@@ -155,13 +154,8 @@ html, body, [class*="css"] {
 .block-container {
     padding-top: 24px !important;
 }
-</style>
-"""
-st.markdown(base_css, unsafe_allow_html=True)
 
-# Extra mobile tweaks
-mobile_css = """
-<style>
+/* Mobile tweaks */
 @media (max-width: 768px) {
   .block-container {
       padding-left: 0.5rem !important;
@@ -177,7 +171,7 @@ mobile_css = """
 }
 </style>
 """
-st.markdown(mobile_css, unsafe_allow_html=True)
+st.markdown(base_css, unsafe_allow_html=True)
 
 # Sidebar collapse CSS
 if "sidebar_collapsed" not in st.session_state:
@@ -548,43 +542,6 @@ def build_ai_plan(email, work_start, work_end, breaks):
     st.session_state["last_plan_df"] = df.to_dict("records")
     return df
 
-# ---- PDF EXPORT HELPER ----
-def create_plan_pdf(df: pd.DataFrame) -> bytes:
-    if df.empty:
-        return b""
-
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
-
-    pdf.set_font("Arial", "B", 16)
-    pdf.cell(0, 10, "Factory Production Plan", ln=True)
-    pdf.ln(4)
-
-    pdf.set_font("Arial", "", 10)
-
-    # Define columns to include
-    cols = ["Day", "Planned Start", "Planned End", "Job", "Process", "Hours"]
-    col_width = pdf.w / len(cols) - 5
-
-    # Header
-    pdf.set_font("Arial", "B", 10)
-    for c in cols:
-        pdf.cell(col_width, 8, c, border=1)
-    pdf.ln(8)
-
-    pdf.set_font("Arial", "", 9)
-    for _, row in df.iterrows():
-        for c in cols:
-            txt = str(row.get(c, ""))
-            if len(txt) > 25:
-                txt = txt[:22] + "..."
-            pdf.cell(col_width, 7, txt, border=1)
-        pdf.ln(7)
-
-    pdf_bytes = pdf.output(dest="S").encode("latin-1")
-    return pdf_bytes
-
 # ============================================
 # LOGIN PAGE
 # ============================================
@@ -909,7 +866,7 @@ elif page == "AI":
             st.markdown(f"**You:** {turn['user']}")
             st.markdown(f"**AI:** {turn['assistant']}")
 
-# ---------- AI PRODUCTION PLAN (UNLIMITED BREAKS + EDIT + PDF) ----------
+# ---------- AI PRODUCTION PLAN (UNLIMITED BREAKS + EDIT ORDER) ----------
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
 
@@ -922,8 +879,12 @@ elif page == "AIPlan":
 
     # --- Working hours using simple time picker ---
     st.subheader("Working Hours")
-    work_start = st.time_input("Work Start Time", value=settings["work_start"], key="work_start_time")
-    work_end = st.time_input("Work End Time", value=settings["work_end"], key="work_end_time")
+    work_start = st.time_input(
+        "Work Start Time", value=settings["work_start"], key="work_start_time"
+    )
+    work_end = st.time_input(
+        "Work End Time", value=settings["work_end"], key="work_end_time"
+    )
 
     # --- Unlimited breaks UI ---
     st.subheader("Breaks in the day (optional)")
@@ -952,7 +913,6 @@ elif page == "AIPlan":
         if delete_index is not None:
             updated_breaks.pop(delete_index)
 
-        # keep only valid breaks
         updated_breaks = [b for b in updated_breaks if b[1] > b[0]]
     else:
         updated_breaks = []
@@ -961,9 +921,13 @@ elif page == "AIPlan":
     st.caption("Add a new break:")
     coln1, coln2, coln3 = st.columns([2, 2, 1])
     with coln1:
-        new_b_start = st.time_input("New Break Start", value=time(13, 0), key="new_break_start")
+        new_b_start = st.time_input(
+            "New Break Start", value=time(13, 0), key="new_break_start"
+        )
     with coln2:
-        new_b_end = st.time_input("New Break End", value=time(14, 0), key="new_break_end")
+        new_b_end = st.time_input(
+            "New Break End", value=time(14, 0), key="new_break_end"
+        )
     with coln3:
         if st.button("➕ Add Break"):
             if new_b_end > new_b_start:
@@ -980,49 +944,60 @@ elif page == "AIPlan":
         "breaks": breaks,
     }
 
-    # --- Generate plan ---
+    # --- Generate plan + drag-like editing using Order column ---
     if st.button("Generate Plan"):
         df_plan = build_ai_plan(user_email, work_start, work_end, breaks)
         if df_plan.empty:
             st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
         else:
-            st.success("Plan generated! You can drag/edit below.")
-            # editable / drag-style editor
+            st.success("Plan generated! You can edit order below.")
+
+            # Add an Order column if not there
+            if "Order" not in df_plan.columns:
+                df_plan.insert(0, "Order", list(range(1, len(df_plan) + 1)))
+
             edited_df = st.data_editor(
                 df_plan,
                 use_container_width=True,
                 num_rows="fixed",
                 key="plan_editor",
+                column_config={
+                    "Order": st.column_config.NumberColumn(
+                        "Order", min_value=1, step=1, help="Change numbers to reorder tasks"
+                    )
+                },
             )
+
+            # Sort by Order to simulate drag/drop ordering
+            edited_df = edited_df.sort_values("Order").reset_index(drop=True)
             st.session_state["last_plan_df"] = edited_df.to_dict("records")
 
-            pdf_bytes = create_plan_pdf(edited_df)
-            if pdf_bytes:
-                st.download_button(
-                    "⬇️ Download Plan as PDF",
-                    data=pdf_bytes,
-                    file_name="production_plan.pdf",
-                    mime="application/pdf",
-                )
+            st.markdown("### 📋 Final Ordered Plan")
+            st.dataframe(edited_df, use_container_width=True)
     else:
         existing = st.session_state.get("last_plan_df", [])
         if existing:
-            st.info("Showing last generated plan (you can still export it).")
+            st.info("Showing last generated plan (you can still change the order).")
             df_existing = pd.DataFrame(existing)
+            if "Order" not in df_existing.columns:
+                df_existing.insert(0, "Order", list(range(1, len(df_existing) + 1)))
+
             edited_df = st.data_editor(
                 df_existing,
                 use_container_width=True,
                 num_rows="fixed",
                 key="plan_editor_existing",
+                column_config={
+                    "Order": st.column_config.NumberColumn(
+                        "Order", min_value=1, step=1, help="Change numbers to reorder tasks"
+                    )
+                },
             )
+
+            edited_df = edited_df.sort_values("Order").reset_index(drop=True)
             st.session_state["last_plan_df"] = edited_df.to_dict("records")
-            pdf_bytes = create_plan_pdf(edited_df)
-            if pdf_bytes:
-                st.download_button(
-                    "⬇️ Download Plan as PDF",
-                    data=pdf_bytes,
-                    file_name="production_plan.pdf",
-                    mime="application/pdf",
-                )
+
+            st.markdown("### 📋 Final Ordered Plan")
+            st.dataframe(edited_df, use_container_width=True)
         else:
             st.info("Set your working hours, add breaks and click 'Generate Plan'.")
