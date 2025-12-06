@@ -740,23 +740,38 @@ elif page == "AddJob":
     else:
         st.caption("No processes added yet. Add steps above.")
 
-    st.markdown("### 🧰 Stock Used (optional)")
-    stocks = get_user_stocks(user_email)
-    stock_options = ["None"] + [
-        f"{s['name']} ({s.get('category','')}) — {s['quantity_float']}" for s in stocks
-    ]
-    selected_stock_label = st.selectbox("Select Stock", stock_options)
+  st.markdown("### 🧰 Stock Used (optional)")
 
-    stock_use_qty = 0.0
-    selected_stock_id = ""
-    if selected_stock_label != "None":
-        idx = stock_options.index(selected_stock_label) - 1
-        selected_stock = stocks[idx]
-        selected_stock_id = selected_stock["id"]
-        max_qty = selected_stock["quantity_float"]
-        stock_use_qty = st.number_input(
-            "Stock quantity to use", min_value=0.0, max_value=max_qty, step=0.5
-        )
+stocks = get_user_stocks(user_email)
+
+# Build labels including size
+stock_options = ["None"] + [
+    f"{s['name']} ({s.get('category','')}) — Size: {s.get('size','N/A')} — Qty: {s['quantity_float']}"
+    for s in stocks
+]
+
+selected_stock_label = st.selectbox("Select Stock", stock_options)
+
+stock_use_qty = 0.0
+selected_stock_id = ""
+selected_stock_size = ""
+
+if selected_stock_label != "None":
+    idx = stock_options.index(selected_stock_label) - 1
+    selected_stock = stocks[idx]
+
+    selected_stock_id = selected_stock["id"]
+    selected_stock_size = selected_stock.get("size", "")
+
+    max_qty = selected_stock["quantity_float"]
+
+    stock_use_qty = st.number_input(
+        "Stock quantity to use",
+        min_value=0.0,
+        max_value=max_qty,
+        step=0.5
+    )
+
 
     if st.button("Save Job"):
         processes_json = json.dumps(st.session_state["job_processes"])
