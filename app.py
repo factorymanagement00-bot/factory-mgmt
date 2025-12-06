@@ -4,6 +4,7 @@ import pandas as pd
 import json
 import os
 from datetime import datetime, date, time, timedelta
+from fpdf import FPDF  # <- for PDF export
 
 # ============================================
 # APP SETTINGS
@@ -157,6 +158,26 @@ html, body, [class*="css"] {
 </style>
 """
 st.markdown(base_css, unsafe_allow_html=True)
+
+# Extra mobile tweaks
+mobile_css = """
+<style>
+@media (max-width: 768px) {
+  .block-container {
+      padding-left: 0.5rem !important;
+      padding-right: 0.5rem !important;
+  }
+  .metric-card {
+      padding: 12px;
+  }
+  .login-card {
+      margin: 80px auto !important;
+      padding: 24px;
+  }
+}
+</style>
+"""
+st.markdown(mobile_css, unsafe_allow_html=True)
 
 # Sidebar collapse CSS
 if "sidebar_collapsed" not in st.session_state:
@@ -527,6 +548,43 @@ def build_ai_plan(email, work_start, work_end, breaks):
     st.session_state["last_plan_df"] = df.to_dict("records")
     return df
 
+# ---- PDF EXPORT HELPER ----
+def create_plan_pdf(df: pd.DataFrame) -> bytes:
+    if df.empty:
+        return b""
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, "Factory Production Plan", ln=True)
+    pdf.ln(4)
+
+    pdf.set_font("Arial", "", 10)
+
+    # Define columns to include
+    cols = ["Day", "Planned Start", "Planned End", "Job", "Process", "Hours"]
+    col_width = pdf.w / len(cols) - 5
+
+    # Header
+    pdf.set_font("Arial", "B", 10)
+    for c in cols:
+        pdf.cell(col_width, 8, c, border=1)
+    pdf.ln(8)
+
+    pdf.set_font("Arial", "", 9)
+    for _, row in df.iterrows():
+        for c in cols:
+            txt = str(row.get(c, ""))
+            if len(txt) > 25:
+                txt = txt[:22] + "..."
+            pdf.cell(col_width, 7, txt, border=1)
+        pdf.ln(7)
+
+    pdf_bytes = pdf.output(dest="S").encode("latin-1")
+    return pdf_bytes
+
 # ============================================
 # LOGIN PAGE
 # ============================================
@@ -851,7 +909,7 @@ elif page == "AI":
             st.markdown(f"**You:** {turn['user']}")
             st.markdown(f"**AI:** {turn['assistant']}")
 
-# ---------- AI PRODUCTION PLAN (12-HOUR PICKER) ----------
+# ---------- AI PRODUCTION PLAN (UNLIMITED BREAKS + EDIT + PDF) ----------
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
 
@@ -860,75 +918,111 @@ elif page == "AIPlan":
         "based on your working hours and breaks."
     )
 
-    # Custom 12-hour time picker
-    def time_picker(label, default):
-        col1, col2, col3 = st.columns([2, 2, 1])
-
-        hour_12 = default.hour % 12 or 12
-        minute = default.minute
-        ampm = "AM" if default.hour < 12 else "PM"
-
-        with col1:
-            h = st.selectbox(f"{label} (Hour)", list(range(1, 13)), index=(hour_12 - 1))
-        with col2:
-            m = st.selectbox(
-                f"{label} (Minute)",
-                [0, 15, 30, 45],
-                index=[0, 15, 30, 45].index(
-                    minute if minute in [0, 15, 30, 45] else 0
-                ),
-            )
-        with col3:
-            ap = st.selectbox(
-                f"{label}", ["AM", "PM"], index=0 if ampm == "AM" else 1
-            )
-
-        h24 = h % 12 + (12 if ap == "PM" else 0)
-        return time(h24, m)
-
     settings = get_schedule_settings()
 
-    st.subheader("Working Hours (12-hour format)")
-    work_start = time_picker("Work Start Time", settings["work_start"])
-    work_end = time_picker("Work End Time", settings["work_end"])
+    # --- Working hours using simple time picker ---
+    st.subheader("Working Hours")
+    work_start = st.time_input("Work Start Time", value=settings["work_start"], key="work_start_time")
+    work_end = st.time_input("Work End Time", value=settings["work_end"], key="work_end_time")
 
-    st.subheader("Breaks in the day (optional) — 12-hour format")
+    # --- Unlimited breaks UI ---
+    st.subheader("Breaks in the day (optional)")
 
-    colb1, colb2 = st.columns(2)
-    with colb1:
-        b1_start = time_picker("Break 1 Start", time(13, 0))
-    with colb2:
-        b1_end = time_picker("Break 1 End", time(14, 0))
+    breaks_list = list(settings.get("breaks", []))
+    updated_breaks = []
+    delete_index = None
 
-    colb3, colb4 = st.columns(2)
-    with colb3:
-        b2_start = time_picker("Break 2 Start", time(17, 0))
-    with colb4:
-        b2_end = time_picker("Break 2 End", time(17, 30))
+    if breaks_list:
+        st.caption("Edit or remove existing breaks:")
+        for i, (b_start, b_end) in enumerate(breaks_list):
+            col1, col2, col3 = st.columns([2, 2, 1])
+            with col1:
+                nb_start = st.time_input(
+                    f"Break {i+1} Start", value=b_start, key=f"break_start_{i}"
+                )
+            with col2:
+                nb_end = st.time_input(
+                    f"Break {i+1} End", value=b_end, key=f"break_end_{i}"
+                )
+            with col3:
+                if st.button("❌ Remove", key=f"remove_break_{i}"):
+                    delete_index = i
+            updated_breaks.append((nb_start, nb_end))
 
-    breaks = []
-    if b1_end > b1_start:
-        breaks.append((b1_start, b1_end))
-    if b2_end > b2_start:
-        breaks.append((b2_start, b2_end))
+        if delete_index is not None:
+            updated_breaks.pop(delete_index)
 
-    # save so AI Chat uses same settings
+        # keep only valid breaks
+        updated_breaks = [b for b in updated_breaks if b[1] > b[0]]
+    else:
+        updated_breaks = []
+
+    st.markdown("---")
+    st.caption("Add a new break:")
+    coln1, coln2, coln3 = st.columns([2, 2, 1])
+    with coln1:
+        new_b_start = st.time_input("New Break Start", value=time(13, 0), key="new_break_start")
+    with coln2:
+        new_b_end = st.time_input("New Break End", value=time(14, 0), key="new_break_end")
+    with coln3:
+        if st.button("➕ Add Break"):
+            if new_b_end > new_b_start:
+                updated_breaks.append((new_b_start, new_b_end))
+            else:
+                st.warning("Break end time must be after start time.")
+
+    breaks = updated_breaks
+
+    # save back so AI Chat also uses same settings
     st.session_state["schedule_settings"] = {
         "work_start": work_start,
         "work_end": work_end,
         "breaks": breaks,
     }
 
+    # --- Generate plan ---
     if st.button("Generate Plan"):
         df_plan = build_ai_plan(user_email, work_start, work_end, breaks)
         if df_plan.empty:
             st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
         else:
-            st.success("Plan generated!")
-            st.dataframe(df_plan, use_container_width=True)
+            st.success("Plan generated! You can drag/edit below.")
+            # editable / drag-style editor
+            edited_df = st.data_editor(
+                df_plan,
+                use_container_width=True,
+                num_rows="fixed",
+                key="plan_editor",
+            )
+            st.session_state["last_plan_df"] = edited_df.to_dict("records")
+
+            pdf_bytes = create_plan_pdf(edited_df)
+            if pdf_bytes:
+                st.download_button(
+                    "⬇️ Download Plan as PDF",
+                    data=pdf_bytes,
+                    file_name="production_plan.pdf",
+                    mime="application/pdf",
+                )
     else:
         existing = st.session_state.get("last_plan_df", [])
         if existing:
-            st.dataframe(pd.DataFrame(existing), use_container_width=True)
+            st.info("Showing last generated plan (you can still export it).")
+            df_existing = pd.DataFrame(existing)
+            edited_df = st.data_editor(
+                df_existing,
+                use_container_width=True,
+                num_rows="fixed",
+                key="plan_editor_existing",
+            )
+            st.session_state["last_plan_df"] = edited_df.to_dict("records")
+            pdf_bytes = create_plan_pdf(edited_df)
+            if pdf_bytes:
+                st.download_button(
+                    "⬇️ Download Plan as PDF",
+                    data=pdf_bytes,
+                    file_name="production_plan.pdf",
+                    mime="application/pdf",
+                )
         else:
-            st.info("Set your working hours and click 'Generate Plan'.")
+            st.info("Set your working hours, add breaks and click 'Generate Plan'.")
