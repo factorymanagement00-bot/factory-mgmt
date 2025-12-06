@@ -542,6 +542,50 @@ def build_ai_plan(email, work_start, work_end, breaks):
     st.session_state["last_plan_df"] = df.to_dict("records")
     return df
 
+# --- 12-HOUR UI TIME PICKER (AM/PM) ---
+def ui_time_picker_12(label: str, default: time, key_prefix: str) -> time:
+    """
+    Simple 12-hour time picker with AM/PM.
+    Returns a Python time() object in 24-hour internally.
+    """
+    col1, col2, col3 = st.columns([2, 2, 1])
+
+    hour_24 = default.hour
+    hour_12 = hour_24 % 12 or 12
+    minute = default.minute
+    ampm_default = "AM" if hour_24 < 12 else "PM"
+
+    minute_options = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]
+    try:
+        minute_index = minute_options.index(minute)
+    except ValueError:
+        minute_index = 0
+
+    with col1:
+        h = st.selectbox(
+            f"{label} (Hour)",
+            list(range(1, 13)),
+            index=hour_12 - 1,
+            key=f"{key_prefix}_hour",
+        )
+    with col2:
+        m = st.selectbox(
+            f"{label} (Minute)",
+            minute_options,
+            index=minute_index,
+            key=f"{key_prefix}_minute",
+        )
+    with col3:
+        ap = st.selectbox(
+            f"{label} (AM/PM)",
+            ["AM", "PM"],
+            index=0 if ampm_default == "AM" else 1,
+            key=f"{key_prefix}_ampm",
+        )
+
+    h24 = h % 12 + (12 if ap == "PM" else 0)
+    return time(h24, m)
+
 # ============================================
 # LOGIN PAGE
 # ============================================
@@ -866,7 +910,7 @@ elif page == "AI":
             st.markdown(f"**You:** {turn['user']}")
             st.markdown(f"**AI:** {turn['assistant']}")
 
-# ---------- AI PRODUCTION PLAN (UNLIMITED BREAKS + EDIT ORDER) ----------
+# ---------- AI PRODUCTION PLAN (UNLIMITED BREAKS + EDIT ORDER, 12-HOUR) ----------
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
 
@@ -877,17 +921,21 @@ elif page == "AIPlan":
 
     settings = get_schedule_settings()
 
-    # --- Working hours using simple time picker ---
-    st.subheader("Working Hours")
-    work_start = st.time_input(
-        "Work Start Time", value=settings["work_start"], key="work_start_time"
+    # --- Working hours using 12-hour picker with AM/PM ---
+    st.subheader("Working Hours (12-hour format)")
+    work_start = ui_time_picker_12(
+        "Work Start Time",
+        settings["work_start"],
+        key_prefix="work_start",
     )
-    work_end = st.time_input(
-        "Work End Time", value=settings["work_end"], key="work_end_time"
+    work_end = ui_time_picker_12(
+        "Work End Time",
+        settings["work_end"],
+        key_prefix="work_end",
     )
 
-    # --- Unlimited breaks UI ---
-    st.subheader("Breaks in the day (optional)")
+    # --- Unlimited breaks UI using 12-hour picker ---
+    st.subheader("Breaks in the day (optional) — 12-hour format")
 
     breaks_list = list(settings.get("breaks", []))
     updated_breaks = []
@@ -896,16 +944,22 @@ elif page == "AIPlan":
     if breaks_list:
         st.caption("Edit or remove existing breaks:")
         for i, (b_start, b_end) in enumerate(breaks_list):
+            st.markdown(f"**Break {i+1}**")
             col1, col2, col3 = st.columns([2, 2, 1])
             with col1:
-                nb_start = st.time_input(
-                    f"Break {i+1} Start", value=b_start, key=f"break_start_{i}"
+                nb_start = ui_time_picker_12(
+                    "Start",
+                    b_start,
+                    key_prefix=f"break_{i}_start",
                 )
             with col2:
-                nb_end = st.time_input(
-                    f"Break {i+1} End", value=b_end, key=f"break_end_{i}"
+                nb_end = ui_time_picker_12(
+                    "End",
+                    b_end,
+                    key_prefix=f"break_{i}_end",
                 )
             with col3:
+                st.write("")
                 if st.button("❌ Remove", key=f"remove_break_{i}"):
                     delete_index = i
             updated_breaks.append((nb_start, nb_end))
@@ -921,14 +975,19 @@ elif page == "AIPlan":
     st.caption("Add a new break:")
     coln1, coln2, coln3 = st.columns([2, 2, 1])
     with coln1:
-        new_b_start = st.time_input(
-            "New Break Start", value=time(13, 0), key="new_break_start"
+        new_b_start = ui_time_picker_12(
+            "New Break Start",
+            time(13, 0),
+            key_prefix="new_break_start",
         )
     with coln2:
-        new_b_end = st.time_input(
-            "New Break End", value=time(14, 0), key="new_break_end"
+        new_b_end = ui_time_picker_12(
+            "New Break End",
+            time(14, 0),
+            key_prefix="new_break_end",
         )
     with coln3:
+        st.write("")
         if st.button("➕ Add Break"):
             if new_b_end > new_b_start:
                 updated_breaks.append((new_b_start, new_b_end))
@@ -952,7 +1011,6 @@ elif page == "AIPlan":
         else:
             st.success("Plan generated! You can edit order below.")
 
-            # Add an Order column if not there
             if "Order" not in df_plan.columns:
                 df_plan.insert(0, "Order", list(range(1, len(df_plan) + 1)))
 
@@ -963,12 +1021,14 @@ elif page == "AIPlan":
                 key="plan_editor",
                 column_config={
                     "Order": st.column_config.NumberColumn(
-                        "Order", min_value=1, step=1, help="Change numbers to reorder tasks"
+                        "Order",
+                        min_value=1,
+                        step=1,
+                        help="Change numbers to reorder tasks",
                     )
                 },
             )
 
-            # Sort by Order to simulate drag/drop ordering
             edited_df = edited_df.sort_values("Order").reset_index(drop=True)
             st.session_state["last_plan_df"] = edited_df.to_dict("records")
 
@@ -989,7 +1049,10 @@ elif page == "AIPlan":
                 key="plan_editor_existing",
                 column_config={
                     "Order": st.column_config.NumberColumn(
-                        "Order", min_value=1, step=1, help="Change numbers to reorder tasks"
+                        "Order",
+                        min_value=1,
+                        step=1,
+                        help="Change numbers to reorder tasks",
                     )
                 },
             )
