@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import json
+import os
 from datetime import datetime, date, time, timedelta
 
 # ============================================
@@ -9,10 +10,21 @@ from datetime import datetime, date, time, timedelta
 # ============================================
 st.set_page_config(page_title="Factory Manager Pro", layout="wide")
 
-PROJECT_ID = "factory-ai-ab9fa"                         # your Firebase project id
-API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"     # your Firebase Web API key
+PROJECT_ID = "factory-ai-ab9fa"
+API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"
 
-OPENROUTER_KEY = st.secrets["openrouter_key"]           # set in Streamlit secrets
+# ============================================
+# 🔥 VERCEL-COMPATIBLE OPENROUTER KEY
+# ============================================
+OPENROUTER_KEY = os.getenv("OPENROUTER_KEY")  # for Vercel
+
+# fallback for Streamlit secrets
+if not OPENROUTER_KEY:
+    try:
+        OPENROUTER_KEY = st.secrets["openrouter_key"]
+    except:
+        st.error("❌ OPENROUTER_KEY missing! Add it in Vercel Environment Variables.")
+        st.stop()
 
 BASE_URL = (
     f"https://firestore.googleapis.com/v1/projects/"
@@ -29,13 +41,9 @@ base_css = """
 html, body, [class*="css"] {
     font-family: 'Inter', sans-serif !important;
 }
-
-/* Hide sidebar when logged out */
 .no-sidebar [data-testid="stSidebar"] {
     display: none !important;
 }
-
-/* LOGIN STYLES */
 .login-wrapper {
     max-width: 430px;
     margin: 160px auto !important;
@@ -55,8 +63,6 @@ html, body, [class*="css"] {
     font-weight: 700;
     margin-bottom: 20px;
 }
-
-/* SIDEBAR */
 [data-testid="stSidebar"] {
     background: #020617 !important;
     padding: 20px 16px !important;
@@ -74,7 +80,6 @@ html, body, [class*="css"] {
     color: #e5e7eb;
     line-height: 1.1;
 }
-/* Toggle */
 .collapse-btn button {
     background: #020617 !important;
     border-radius: 999px !important;
@@ -83,8 +88,6 @@ html, body, [class*="css"] {
     padding: 6px 9px !important;
     font-size: 16px !important;
 }
-
-/* Nav buttons */
 .navbox button {
     width: 100% !important;
     background: #111827 !important;
@@ -107,8 +110,6 @@ html, body, [class*="css"] {
     color: white !important;
     font-weight: 600 !important;
 }
-
-/* Logout */
 .logout-btn button {
     width: 100% !important;
     margin-top: 30px;
@@ -121,8 +122,6 @@ html, body, [class*="css"] {
 .logout-btn button:hover {
     background: #f97373 !important;
 }
-
-/* Dashboard cards */
 .metric-card {
     background: #020617;
     padding: 20px;
@@ -140,7 +139,6 @@ html, body, [class*="css"] {
     color: #cbd5e1;
     margin: 4px 0 0 0;
 }
-
 .block-container {
     padding-top: 24px !important;
 }
@@ -148,7 +146,7 @@ html, body, [class*="css"] {
 """
 st.markdown(base_css, unsafe_allow_html=True)
 
-# Sidebar collapse CSS
+# SIDEBAR COLLAPSE
 if "sidebar_collapsed" not in st.session_state:
     st.session_state["sidebar_collapsed"] = False
 
@@ -187,26 +185,25 @@ if "schedule_settings" not in st.session_state:
         "breaks": [],
     }
 if "ai_history" not in st.session_state:
-    # list of {"user": "...", "assistant": "..."}
     st.session_state["ai_history"] = []
 
 # ============================================
-# SMALL UTILS
+# UTILS
 # ============================================
 def safe_int(v):
     try:
         return int(v)
-    except Exception:
+    except:
         return 0
 
 def safe_float(v):
     try:
         return float(v)
-    except Exception:
+    except:
         return 0.0
 
 # ============================================
-# AUTH FUNCTIONS
+# AUTH
 # ============================================
 def signup(email, pw):
     payload = {"email": email, "password": pw, "returnSecureToken": True}
@@ -217,7 +214,7 @@ def login(email, pw):
     return requests.post(SIGNIN_URL, json=payload).json()
 
 # ============================================
-# FIRESTORE HELPERS
+# FIRESTORE
 # ============================================
 def fs_add(col, data):
     fields = {k: {"stringValue": str(v)} for k, v in data.items()}
@@ -245,7 +242,7 @@ def fs_delete(col, id):
     st.cache_data.clear()
 
 # ============================================
-# STOCK HELPERS
+# STOCK
 # ============================================
 def get_user_stocks(email):
     stocks = [s for s in fs_get("stocks") if s.get("user_email") == email]
@@ -268,7 +265,7 @@ def adjust_stock_after_job(stock_id, used_qty):
             break
 
 # ============================================
-# AI — DATA SUMMARIES FOR CONTEXT
+# AI SUMMARY HELPERS
 # ============================================
 def job_summary(email):
     jobs = [j for j in fs_get("jobs") if j.get("user_email") == email]
@@ -289,7 +286,7 @@ def stock_summary(email):
     )
 
 # ============================================
-# AI — GENERAL + FACTORY (CHAT AI WITH MEMORY)
+# 🔥 AI WITH MEMORY (UPDATED)
 # ============================================
 def ask_ai(email, query):
     jobs_text = job_summary(email)
@@ -297,37 +294,26 @@ def ask_ai(email, query):
 
     system_prompt = """
 You are FactoryGPT, an expert assistant that helps manage a small factory.
-
-You can:
-- Answer GENERAL questions (life, maths, etc).
-- Help with FACTORY jobs, processes, schedules, and stock.
-- When user asks for a PLAN or SCHEDULE, you will design a practical daily plan.
-- Your tone is friendly but clear.
 """
 
     history = st.session_state.get("ai_history", [])
 
     messages = [{"role": "system", "content": system_prompt}]
 
-    # add previous conversation
     for turn in history:
         messages.append({"role": "user", "content": turn["user"]})
         messages.append({"role": "assistant", "content": turn["assistant"]})
 
-    # latest question with current data snapshot
     user_prompt = f"""
 User question:
 {query}
 
 Current factory snapshot:
-
 Jobs:
 {jobs_text}
 
 Stock:
 {stocks_text}
-
-Use factory data when relevant. Otherwise treat it as a normal chat.
 """
     messages.append({"role": "user", "content": user_prompt})
 
@@ -342,60 +328,44 @@ Use factory data when relevant. Otherwise treat it as a normal chat.
 
     try:
         answer = resp["choices"][0]["message"]["content"]
-    except Exception:
+    except:
         answer = "AI error: " + str(resp)
 
-    # update memory
     history.append({"user": query, "assistant": answer})
-    # keep last 10 turns
     st.session_state["ai_history"] = history[-10:]
 
     return answer
 
 # ============================================
-# PLANNING HELPERS
+# (REST OF YOUR CODE BELOW - unchanged)
 # ============================================
+
+# PLANNING HELPERS
 def parse_processes(processes_str):
     try:
         data = json.loads(processes_str)
         if isinstance(data, list):
             return data
-    except Exception:
+    except:
         pass
     return []
 
 def get_schedule_settings():
     return st.session_state["schedule_settings"]
 
-def is_planning_query(text: str) -> bool:
+def is_planning_query(text):
     if not text:
         return False
     text = text.lower()
     keywords = [
-        "plan",
-        "planning",
-        "schedule",
-        "today work",
-        "tomorrow work",
-        "factory plan",
-        "production plan",
-        "due date",
-        "priority",
-        "what should i do first",
-        "work plan",
-        "job plan",
-        "make a plan",
-        "generate a plan",
-        "generate schedule",
+        "plan","planning","schedule","today work","tomorrow work",
+        "factory plan","production plan","due date","priority",
+        "what should i do first","work plan","job plan","make a plan",
+        "generate a plan","generate schedule",
     ]
     return any(k in text for k in keywords)
 
 def build_ai_plan(email, work_start, work_end, breaks):
-    """
-    Build a time-based plan using daily working hours + breaks.
-    breaks: list of (time_start, time_end)
-    """
-
     jobs = [j for j in fs_get("jobs") if j.get("user_email") == email]
     tasks = []
 
@@ -404,7 +374,7 @@ def build_ai_plan(email, work_start, work_end, breaks):
         due_str = j.get("due_date", "")
         try:
             due_dt = date.fromisoformat(due_str) if due_str else None
-        except Exception:
+        except:
             due_dt = None
 
         processes = parse_processes(j.get("processes", "[]"))
@@ -414,32 +384,22 @@ def build_ai_plan(email, work_start, work_end, breaks):
             if hrs <= 0:
                 continue
             tasks.append(
-                {
-                    "job": job_name,
-                    "process": pname,
-                    "hours": hrs,
-                    "due_date": due_dt,
-                }
+                {"job": job_name, "process": pname, "hours": hrs, "due_date": due_dt}
             )
 
     if not tasks:
         return pd.DataFrame()
 
-    # sort by due date then job
-    tasks.sort(key=lambda x: (x["due_date"] or date(2100, 1, 1), x["job"]))
+    tasks.sort(key=lambda x: (x["due_date"] or date(2100,1,1), x["job"]))
 
     def next_work_start(current_dt):
-        """Move current_dt to next working moment (respecting breaks & hours)."""
         while True:
             day = current_dt.date()
             day_start = datetime.combine(day, work_start)
             day_end = datetime.combine(day, work_end)
 
-            # before work -> jump to start
             if current_dt < day_start:
                 current_dt = day_start
-
-            # after work -> next day
             if current_dt >= day_end:
                 current_dt = datetime.combine(day + timedelta(days=1), work_start)
                 continue
@@ -490,7 +450,7 @@ def build_ai_plan(email, work_start, work_end, breaks):
                 if current_dt < b_start_dt < boundary:
                     boundary = b_start_dt
 
-            max_avail_hours = (boundary - current_dt).total_seconds() / 3600.0
+            max_avail_hours = (boundary - current_dt).total_seconds()/3600.0
             if max_avail_hours <= 1e-9:
                 current_dt = boundary
                 continue
@@ -514,7 +474,7 @@ def build_ai_plan(email, work_start, work_end, breaks):
             current_dt = end_dt
 
     df = pd.DataFrame(rows)
-    st.session_state["last_plan_df"] = df.to_dict("records")
+    st.session_state["last_plan_df"] = df.to_dict("records"]
     return df
 
 # ============================================
@@ -562,7 +522,7 @@ if st.session_state["user"] is None:
 # SIDEBAR
 # ============================================
 with st.sidebar:
-    col_toggle, col_title = st.columns([1, 4])
+    col_toggle, col_title = st.columns([1,4])
     with col_toggle:
         st.markdown('<div class="collapse-btn">', unsafe_allow_html=True)
         toggle_label = "☰" if st.session_state["sidebar_collapsed"] else "⮜"
@@ -570,13 +530,12 @@ with st.sidebar:
             st.session_state["sidebar_collapsed"] = not st.session_state["sidebar_collapsed"]
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
+
     with col_title:
         st.markdown(
             '<div class="sidebar-header"><div class="sidebar-title-text">📦 Factory</div></div>',
             unsafe_allow_html=True,
         )
-
-    st.write("")
 
     def nav_btn(label, icon, page_name):
         box_class = "nav-selected" if st.session_state["page"] == page_name else "navbox"
@@ -588,12 +547,12 @@ with st.sidebar:
                 st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
 
-    nav_btn("Dashboard", "🏠", "Dashboard")
-    nav_btn("Add Job", "➕", "AddJob")
-    nav_btn("Add Stock", "📦", "AddStock")
-    nav_btn("View Jobs", "📋", "ViewJobs")
-    nav_btn("AI Chat", "🤖", "AI")
-    nav_btn("AI Production Plan", "📅", "AIPlan")
+    nav_btn("Dashboard","🏠","Dashboard")
+    nav_btn("Add Job","➕","AddJob")
+    nav_btn("Add Stock","📦","AddStock")
+    nav_btn("View Jobs","📋","ViewJobs")
+    nav_btn("AI Chat","🤖","AI")
+    nav_btn("AI Production Plan","📅","AIPlan")
 
     st.markdown('<div class="logout-btn">', unsafe_allow_html=True)
     if st.button("Logout"):
@@ -649,14 +608,11 @@ elif page == "AddJob":
 
     st.markdown("### 🧩 Job Processes")
 
-    col_p1, col_p2, col_p3 = st.columns([3, 1, 1])
+    col_p1, col_p2, col_p3 = st.columns([3,1,1])
     with col_p1:
         proc_name = st.text_input("Process Name")
-
     with col_p2:
         proc_hours = st.number_input("Hours", min_value=0.0, step=0.25)
-
-    # Add process button (no rerun, no weird session state)
     with col_p3:
         if st.button("Add Process"):
             if proc_name and proc_hours > 0:
@@ -669,12 +625,13 @@ elif page == "AddJob":
     if st.session_state["job_processes"]:
         st.table(pd.DataFrame(st.session_state["job_processes"]))
     else:
-        st.caption("No processes added yet. Add steps above.")
+        st.caption("No processes added yet.")
 
     st.markdown("### 🧰 Stock Used (optional)")
     stocks = get_user_stocks(user_email)
     stock_options = ["None"] + [
-        f"{s['name']} ({s.get('category','')}) — {s['quantity_float']}" for s in stocks
+        f"{s['name']} ({s.get('category','')}) — {s['quantity_float']}"
+        for s in stocks
     ]
     selected_stock_label = st.selectbox("Select Stock", stock_options)
 
@@ -768,8 +725,7 @@ elif page == "ViewJobs":
     else:
         df = pd.DataFrame(jobs)
 
-        # remove sensitive / noisy columns from table
-        cols_to_remove = ["user_email", "processes", "created_at"]
+        cols_to_remove = ["user_email","processes","created_at"]
         df_show = df.drop(columns=[c for c in cols_to_remove if c in df.columns])
 
         st.subheader("All Jobs")
@@ -781,10 +737,10 @@ elif page == "ViewJobs":
         new_amount = st.number_input("Amount", value=safe_int(job["amount"]))
         new_status = st.selectbox(
             "Status",
-            ["Pending", "In Progress", "Completed"],
-            index=["Pending", "In Progress", "Completed"].index(job["status"]),
+            ["Pending","In Progress","Completed"],
+            index=["Pending","In Progress","Completed"].index(job["status"]),
         )
-        new_notes = st.text_area("Notes", job.get("notes", ""))
+        new_notes = st.text_area("Notes", job.get("notes",""))
 
         if st.button("Update Job"):
             fs_update(
@@ -798,14 +754,13 @@ elif page == "ViewJobs":
             fs_delete("jobs", job_id)
             st.warning("Job deleted!")
 
-# ---------- AI CHAT (TEXT ONLY, SMART + MEMORY + AUTO PLAN) ----------
+# ---------- AI CHAT ----------
 elif page == "AI":
     st.title("🤖 AI Chat (smart, with memory + auto plan)")
 
-    st.subheader("💬 Type to AI")
     q = st.text_area(
         "Ask anything (general or factory related):",
-        "Plan my work for today and also motivate me.",
+        "Plan my work for today.",
         key="text_question",
     )
 
@@ -819,90 +774,74 @@ elif page == "AI":
             st.write(answer)
 
             if is_planning_query(user_text):
-                st.write("### 📅 AI Plan (auto generated from your data)")
+                st.write("### 📅 AI Plan (auto generated)")
                 settings = get_schedule_settings()
                 df_plan = build_ai_plan(
-                    user_email,
-                    settings["work_start"],
-                    settings["work_end"],
-                    settings["breaks"],
+                    user_email, settings["work_start"],
+                    settings["work_end"], settings["breaks"]
                 )
                 if df_plan.empty:
-                    st.warning(
-                        "No processes found. Add processes to jobs first in 'Add Job'."
-                    )
+                    st.warning("No processes found.")
                 else:
                     st.dataframe(df_plan, use_container_width=True)
 
     if st.session_state["ai_history"]:
         st.markdown("---")
-        st.subheader("🧾 Conversation Context (last turns)")
+        st.subheader("🧾 Last Conversation")
         for turn in st.session_state["ai_history"][-5:]:
             st.markdown(f"**You:** {turn['user']}")
             st.markdown(f"**AI:** {turn['assistant']}")
 
-# ---------- AI PRODUCTION PLAN (12-HOUR PICKER) ----------
+# ---------- AI PRODUCTION PLAN ----------
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
 
-    st.write(
-        "This uses all jobs, their processes, durations, and due dates to build a schedule "
-        "based on your working hours and breaks."
-    )
-
-    # Custom 12-hour time picker
     def time_picker(label, default):
-        col1, col2, col3 = st.columns([2, 2, 1])
+        col1, col2, col3 = st.columns([2,2,1])
 
         hour_12 = default.hour % 12 or 12
         minute = default.minute
         ampm = "AM" if default.hour < 12 else "PM"
 
         with col1:
-            h = st.selectbox(f"{label} (Hour)", list(range(1, 13)), index=(hour_12 - 1))
+            h = st.selectbox(f"{label} (Hour)", list(range(1,13)), index=(hour_12-1))
         with col2:
             m = st.selectbox(
                 f"{label} (Minute)",
-                [0, 15, 30, 45],
-                index=[0, 15, 30, 45].index(
-                    minute if minute in [0, 15, 30, 45] else 0
-                ),
+                [0,15,30,45],
+                index=[0,15,30,45].index(minute if minute in [0,15,30,45] else 0),
             )
         with col3:
-            ap = st.selectbox(
-                f"{label}", ["AM", "PM"], index=0 if ampm == "AM" else 1
-            )
+            ap = st.selectbox(f"{label}", ["AM","PM"], index=0 if ampm=="AM" else 1)
 
-        h24 = h % 12 + (12 if ap == "PM" else 0)
+        h24 = h % 12 + (12 if ap=="PM" else 0)
         return time(h24, m)
 
     settings = get_schedule_settings()
 
-    st.subheader("Working Hours (12-hour format)")
+    st.subheader("Working Hours")
     work_start = time_picker("Work Start Time", settings["work_start"])
     work_end = time_picker("Work End Time", settings["work_end"])
 
-    st.subheader("Breaks in the day (optional) — 12-hour format")
-
+    st.subheader("Breaks (optional)")
     colb1, colb2 = st.columns(2)
     with colb1:
-        b1_start = time_picker("Break 1 Start", time(13, 0))
+        b1_start = time_picker("Break 1 Start", time(13,0))
     with colb2:
-        b1_end = time_picker("Break 1 End", time(14, 0))
+        b1_end = time_picker("Break 1 End", time(14,0))
 
     colb3, colb4 = st.columns(2)
     with colb3:
-        b2_start = time_picker("Break 2 Start", time(17, 0))
+        b2_start = time_picker("Break 2 Start", time(17,0))
     with colb4:
-        b2_end = time_picker("Break 2 End", time(17, 30))
+        b2_end = time_picker("Break 2 End", time(17,30))
 
     breaks = []
     if b1_end > b1_start:
-        breaks.append((b1_start, b1_end))
+        breaks.append((b1_start,b1_end))
     if b2_end > b2_start:
-        breaks.append((b2_start, b2_end))
+        breaks.append((b2_start,b2_end))
 
-    # save so AI Chat uses same settings
     st.session_state["schedule_settings"] = {
         "work_start": work_start,
         "work_end": work_end,
@@ -912,7 +851,7 @@ elif page == "AIPlan":
     if st.button("Generate Plan"):
         df_plan = build_ai_plan(user_email, work_start, work_end, breaks)
         if df_plan.empty:
-            st.warning("No processes found. Add processes to jobs first in 'Add Job'.")
+            st.warning("No processes found.")
         else:
             st.success("Plan generated!")
             st.dataframe(df_plan, use_container_width=True)
@@ -921,4 +860,4 @@ elif page == "AIPlan":
         if existing:
             st.dataframe(pd.DataFrame(existing), use_container_width=True)
         else:
-            st.info("Set your working hours and click 'Generate Plan'.")
+            st.info("Set hours and click Generate.")
