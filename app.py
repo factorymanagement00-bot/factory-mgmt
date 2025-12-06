@@ -57,8 +57,8 @@ defaults = {
     "job_stocks": [],
     "new_stock_sizes": [],
     "last_ai_answer": "",
-    "last_plan_df": None,  # DataFrame plan (manual or AI)
-    "last_plan": "",       # raw text plan (optional)
+    "last_plan_df": None,  # DataFrame with AI plan
+    "last_plan": "",       # raw AI text (optional)
     "schedule_settings": {
         "work_start": time(9, 0),
         "work_end": time(17, 0),
@@ -238,20 +238,24 @@ Stock:
 """
     messages.append({"role": "user", "content": user_prompt})
 
-    r = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={"model": "deepseek/deepseek-chat", "messages": messages},
-    ).json()
+    try:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={"model": "deepseek/deepseek-chat", "messages": messages},
+            timeout=60,
+        ).json()
+    except Exception as e:
+        return f"AI request error: {e}"
 
     try:
         ans = r["choices"][0]["message"]["content"]
     except Exception:
-        ans = "AI error."
-
+        # Show raw error if any
+        ans = f"AI error. Raw response: {r}"
     ss["ai_history"].append({"user": query, "assistant": ans})
     ss["ai_history"] = ss["ai_history"][-10:]
     return ans
@@ -606,7 +610,7 @@ elif page == "ViewJobs":
             st.rerun()
 
 # =========================================
-# AI CHAT (UPDATED WITH AI PLAN GENERATOR TO TABLE)
+# AI CHAT (ONLY AI PLAN GENERATOR)
 # =========================================
 elif page == "AI":
     st.title("🤖 AI Chat")
@@ -623,6 +627,8 @@ elif page == "AI":
     st.subheader("📅 AI Powered Production Plan")
 
     if st.button("Generate AI Plan"):
+        st.info("Generating AI Plan...")
+
         jobs_text = job_summary(email)
         stock_text = stock_summary(email)
         settings = ss["schedule_settings"]
@@ -635,7 +641,7 @@ elif page == "AI":
         )
 
         prompt = f"""
-Create a factory production plan.
+Create a factory production plan for this cardboard box factory.
 
 Working hours: {start} to {end}
 Breaks:
@@ -648,81 +654,86 @@ Stock:
 {stock_text}
 
 Make a detailed schedule with exact timings (HH:MM AM/PM) for each process in every job.
-Include breaks as well in the same timing format.
+Include breaks also in the schedule.
 
-Format each process like:
-process_name : HH:MM AM -> HH:MM PM
-
-Format breaks like:
-Break (name) : HH:MM AM -> HH:MM PM
+Very important:
+- Each line MUST be in the format:
+  process_name : HH:MM AM -> HH:MM PM
+- If the line is a break, include the word "break" in the process name.
+- Group processes under job headers like:
+  === Job Name ===
 """
 
         ai_plan_text = ask_ai(email, prompt)
 
-        # --------------------------
-        # PARSE AI PLAN INTO TABLE
-        # --------------------------
-        rows = []
-        current_job = ""
-
-        for line in ai_plan_text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-
-            # Detect job header like === jobname ===
-            if line.startswith("===") and line.endswith("==="):
-                current_job = line.replace("=", "").strip()
-                continue
-
-            # detect lines with times
-            if ":" in line and ("AM" in line or "PM" in line):
-                try:
-                    item_name, times = line.split(":", 1)
-                    item_name = item_name.strip()
-
-                    # normalize arrow
-                    times = times.replace("→", "->").strip()
-                    if "->" not in times:
-                        continue
-
-                    start_time, end_time = times.split("->", 1)
-                    start_time = start_time.strip()
-                    end_time = end_time.strip()
-
-                    # identify break lines (no job name)
-                    if "break" in item_name.lower():
-                        rows.append({
-                            "Job": "",
-                            "Process": item_name,
-                            "Start": start_time,
-                            "End": end_time
-                        })
-                    else:
-                        rows.append({
-                            "Job": current_job,
-                            "Process": item_name,
-                            "Start": start_time,
-                            "End": end_time
-                        })
-
-                except Exception:
-                    pass
-
-        df = None
-        if rows:
-            df = pd.DataFrame(rows)
-            ss["last_plan_df"] = df
-        ss["last_plan"] = ai_plan_text  # still keep raw text if needed
-
-        st.success("AI Plan generated!")
-        if df is not None:
-            st.dataframe(df, use_container_width=True)
+        if not ai_plan_text or ai_plan_text.strip() == "":
+            st.error("AI did not return any response. Check your OPENROUTER_KEY.")
         else:
-            st.write(ai_plan_text)
+            # --------------------------
+            # PARSE AI PLAN INTO TABLE
+            # --------------------------
+            rows = []
+            current_job = ""
+
+            for line in ai_plan_text.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Detect job header like === jobname ===
+                if line.startswith("===") and line.endswith("==="):
+                    current_job = line.replace("=", "").strip()
+                    continue
+
+                # detect lines with times
+                if ":" in line and ("AM" in line or "PM" in line):
+                    try:
+                        item_name, times = line.split(":", 1)
+                        item_name = item_name.strip()
+
+                        # normalize arrow
+                        times = times.replace("→", "->")
+                        if "->" not in times:
+                            continue
+
+                        start_t, end_t = times.split("->", 1)
+                        start_t = start_t.strip()
+                        end_t = end_t.strip()
+
+                        # identify break lines (no job name)
+                        if "break" in item_name.lower():
+                            rows.append({
+                                "Job": "",
+                                "Process": item_name,
+                                "Start": start_t,
+                                "End": end_t
+                            })
+                        else:
+                            rows.append({
+                                "Job": current_job,
+                                "Process": item_name,
+                                "Start": start_t,
+                                "End": end_t
+                            })
+
+                    except Exception:
+                        # ignore badly formatted lines
+                        pass
+
+            if rows:
+                df = pd.DataFrame(rows)
+                ss["last_plan_df"] = df
+                ss["last_plan"] = ai_plan_text
+
+                st.success("AI Plan Generated!")
+                st.dataframe(df, use_container_width=True)
+            else:
+                ss["last_plan"] = ai_plan_text
+                st.warning("AI returned response but no valid schedule lines were detected.")
+                st.write(ai_plan_text)
 
 # =========================================
-# AI PRODUCTION PLAN (TABLE + BREAKS)
+# AI PRODUCTION PLAN (VIEW AI TABLE + SETTINGS)
 # =========================================
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
@@ -775,128 +786,9 @@ elif page == "AIPlan":
     }
 
     st.markdown("---")
+    st.subheader("Current AI Plan")
 
-    # ======================================
-    # PLAN GENERATOR (MANUAL, TABLE + BREAKS)
-    # ======================================
-    if st.button("Generate Plan"):
-        jobs = [j for j in fs_get("jobs") if j.get("user_email") == email]
-
-        if not jobs:
-            st.warning("No jobs found.")
-        else:
-            rows = []
-
-            def move_to_next_work_start(ct: datetime) -> datetime:
-                start_dt = datetime.combine(ct.date(), ws)
-                end_dt = datetime.combine(ct.date(), we)
-                if ct < start_dt:
-                    return start_dt
-                if ct >= end_dt:
-                    return datetime.combine(ct.date() + timedelta(days=1), ws)
-                return ct
-
-            def breaks_for_date(d: date):
-                return [
-                    (datetime.combine(d, b1), datetime.combine(d, b2))
-                    for b1, b2 in breaks
-                ]
-
-            cur_time = datetime.combine(date.today(), ws)
-            cur_time = move_to_next_work_start(cur_time)
-
-            for job in jobs:
-                processes = json.loads(job.get("processes", "[]"))
-
-                for p in processes:
-                    hours = float(p.get("hours", 0))
-                    if hours <= 0:
-                        continue
-                    duration = timedelta(hours=hours)
-
-                    # find slot
-                    while True:
-                        cur_time = move_to_next_work_start(cur_time)
-                        todays_breaks = breaks_for_date(cur_time.date())
-                        day_end = datetime.combine(cur_time.date(), we)
-
-                        # end-of-day shift
-                        if cur_time + duration > day_end:
-                            cur_time = datetime.combine(
-                                cur_time.date() + timedelta(days=1), ws
-                            )
-                            continue
-
-                        # check breaks
-                        in_break = False
-                        crossing_break = False
-                        for bstart, bend in todays_breaks:
-                            # if current time inside break
-                            if bstart <= cur_time < bend:
-                                # add break row (no job name)
-                                rows.append({
-                                    "Job": "",
-                                    "Process": "Break",
-                                    "Start": bstart.strftime("%I:%M %p"),
-                                    "End": bend.strftime("%I:%M %p"),
-                                })
-                                cur_time = bend
-                                in_break = True
-                                break
-                            # if task would cross break start
-                            if cur_time < bstart < cur_time + duration:
-                                # add break row
-                                rows.append({
-                                    "Job": "",
-                                    "Process": "Break",
-                                    "Start": bstart.strftime("%I:%M %p"),
-                                    "End": bend.strftime("%I:%M %p"),
-                                })
-                                cur_time = bend
-                                crossing_break = True
-                                break
-
-                        if in_break or crossing_break:
-                            continue
-
-                        # accepted slot
-                        start_dt = cur_time
-                        end_dt = cur_time + duration
-
-                        rows.append({
-                            "Job": job["job_name"],
-                            "Process": p["name"],
-                            "Start": start_dt.strftime("%I:%M %p"),
-                            "End": end_dt.strftime("%I:%M %p"),
-                        })
-
-                        cur_time = end_dt
-                        break
-
-            # If no breaks were hit in loop but breaks exist,
-            # you can also list them separately (optional).
-            if not any(r["Process"].lower().startswith("break") for r in rows) and breaks:
-                for i, (b1, b2) in enumerate(breaks, start=1):
-                    rows.append({
-                        "Job": "",
-                        "Process": f"Break {i}",
-                        "Start": b1.strftime("%I:%M %p"),
-                        "End": b2.strftime("%I:%M %p"),
-                    })
-
-            df = pd.DataFrame(rows) if rows else pd.DataFrame(
-                columns=["Job", "Process", "Start", "End"]
-            )
-
-            ss["last_plan_df"] = df
-            ss["last_plan"] = df.to_string(index=False)
-
-            st.success("Plan Generated!")
-            st.dataframe(df, use_container_width=True)
-
-    st.markdown("---")
-    st.subheader("Current Saved Plan (Manual or AI)")
     if isinstance(ss.get("last_plan_df"), pd.DataFrame) and not ss["last_plan_df"].empty:
         st.dataframe(ss["last_plan_df"], use_container_width=True)
     else:
-        st.info("No plan generated yet. Use 'Generate Plan' here or 'Generate AI Plan' in the AI page.")
+        st.info("No AI plan yet. Go to 'AI Chat' and click 'Generate AI Plan'.")
