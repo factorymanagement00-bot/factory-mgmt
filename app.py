@@ -673,101 +673,150 @@ elif page == "AddJob":
         st.success("Job with processes and stocks saved!")
 
 # ----- ADD STOCK (MULTI SIZE + DELETE) -----
-elif page == "AddStock":
-    st.title("📦 Add / Manage Stock")
-    st.subheader("Add New Stock Item")
+# ---------- ADD JOB ----------
+elif page == "AddJob":
+    st.title("➕ Add New Job")
 
-    s_name = st.text_input("Stock Name")
-    s_category = st.text_input("Category")
+    job_name = st.text_input("Job Name")
+    client_name = st.text_input("Client Name")
+    phone = st.text_input("Phone")
+    amount = st.number_input("Amount", min_value=0)
+    quantity = st.number_input("Quantity (pieces / units)", min_value=1, step=1)
+    job_type = st.text_input("Job Type")
+    status = st.selectbox("Status", ["Pending", "In Progress", "Completed"])
+    due_date = st.date_input("Due Date", value=date.today())
 
-    st.markdown("### ➕ Add Size to Stock")
-    colz1, colz2, colz3 = st.columns([2, 2, 1])
-    with colz1:
-        new_size = st.text_input("Size", key="size_input")
-    with colz2:
-        new_qty = st.number_input(
-            "Qty", key="qty_input", min_value=0.0, step=0.5
-        )
-    with colz3:
-        st.write("")
-        if st.button("Add Size"):
-            if new_size and new_qty > 0:
-                ss["new_stock_sizes"].append(
-                    {"size": new_size, "qty": new_qty}
+    # ----------------- PROCESSES -----------------
+    st.markdown("### 🧩 Job Processes")
+
+    if "job_processes" not in st.session_state:
+        st.session_state["job_processes"] = []
+
+    col_p1, col_p2, col_p3 = st.columns([3, 1, 1])
+    with col_p1:
+        proc_name = st.text_input("Process Name")
+
+    with col_p2:
+        proc_hours = st.number_input("Hours", min_value=0.0, step=0.25)
+
+    with col_p3:
+        if st.button("Add Process"):
+            if proc_name and proc_hours > 0:
+                st.session_state["job_processes"].append(
+                    {"name": proc_name, "hours": proc_hours}
                 )
             else:
-                st.warning("Enter valid size and quantity.")
+                st.warning("Give a process name and hours > 0.")
 
-    if ss["new_stock_sizes"]:
-        st.markdown("### 📄 Sizes Added")
-        st.table(pd.DataFrame(ss["new_stock_sizes"]))
-    else:
-        st.caption("No sizes added yet. Add at least one size before saving.")
+    if st.session_state["job_processes"]:
+        st.table(pd.DataFrame(st.session_state["job_processes"]))
 
-    if st.button("Save Stock"):
-        if not s_name:
-            st.error("Stock name required.")
-        elif not ss["new_stock_sizes"]:
-            st.error("Add at least one size.")
-        else:
-            fs_add(
-                "stocks",
-                {
-                    "name": s_name,
-                    "category": s_category,
-                    "sizes": json.dumps(ss["new_stock_sizes"]),
-                    "user_email": user_email,
-                    "created_at": datetime.utcnow().isoformat(),
-                },
-            )
-            ss["new_stock_sizes"] = []
-            st.success("Stock saved!")
-            st.cache_data.clear()
-            st.rerun()
-
-    st.markdown("---")
-    st.subheader("Current Stock (per size)")
+    # ----------------- MULTI-STOCK SYSTEM -----------------
+    st.markdown("### 🧰 Stock Used (multi-stock)")
 
     stocks = get_user_stocks(user_email)
-    if not stocks:
-        st.info("No stock items yet.")
-    else:
-        rows = []
-        for s in stocks:
-            for z in s["sizes_list"]:
-                rows.append(
+
+    # decode size list for each stock
+    for s in stocks:
+        try:
+            s["sizes_list"] = json.loads(s.get("sizes", "[]"))
+        except:
+            s["sizes_list"] = []
+
+    # visible dropdown labels with size summary
+    stock_labels = ["None"]
+    stock_map = {}
+
+    for i, s in enumerate(stocks):
+        sizes = [str(z["size"]) for z in s["sizes_list"]]
+        size_text = ", ".join(sizes) if sizes else "No sizes"
+        label = f"{s['name']} ({s.get('category','')}) — Sizes: {size_text}"
+        stock_labels.append(label)
+        stock_map[label] = i
+
+    selected_stock_label = st.selectbox("Select Stock", stock_labels)
+
+    # prepare multi-stock list
+    if "job_stocks" not in st.session_state:
+        st.session_state["job_stocks"] = []
+
+    selected_stock_id = ""
+    selected_size = ""
+    selected_size_qty = 0
+    selected_use_qty = 0
+
+    # second dropdown: choose size for selected stock
+    if selected_stock_label != "None":
+        stock_idx = stock_map[selected_stock_label]
+        selected_stock = stocks[stock_idx]
+        selected_stock_id = selected_stock["id"]
+
+        # size dropdown
+        size_list = [z["size"] for z in selected_stock["sizes_list"]]
+        size_choice = st.selectbox("Select Size", size_list)
+
+        # find size quantity
+        for z in selected_stock["sizes_list"]:
+            if str(z["size"]) == str(size_choice):
+                selected_size_qty = z["qty"]
+                break
+
+        # show available qty
+        st.info(f"Available: {selected_size_qty}")
+
+        selected_use_qty = st.number_input(
+            "Quantity to use", min_value=0.0, max_value=float(selected_size_qty), step=0.5
+        )
+
+        if st.button("Add Stock to Job"):
+            if selected_use_qty > 0:
+                st.session_state["job_stocks"].append(
                     {
-                        "Name": s["name"],
-                        "Category": s.get("category", ""),
-                        "Size": z.get("size", ""),
-                        "Quantity": z.get("qty", 0),
-                        "StockID": s["id"],
+                        "stock_id": selected_stock_id,
+                        "name": selected_stock["name"],
+                        "category": selected_stock.get("category", ""),
+                        "size": size_choice,
+                        "qty_used": selected_use_qty,
                     }
                 )
-        if rows:
-            df_stock = pd.DataFrame(rows)
-            st.dataframe(
-                df_stock[["Name", "Category", "Size", "Quantity"]],
-                use_container_width=True,
-            )
-        else:
-            st.info("Stocks exist but no sizes found yet.")
+            else:
+                st.warning("Enter valid quantity.")
 
-        st.markdown("### 🗑️ Delete Entire Stock")
-        delete_options = [
-            f"{s['name']} ({s.get('category','')})" for s in stocks
-        ]
-        selected_delete = st.selectbox(
-            "Select stock to delete", ["None"] + delete_options
+    # show stock list added to job
+    if st.session_state["job_stocks"]:
+        st.markdown("### 📦 Stock Added to Job")
+        st.table(pd.DataFrame(st.session_state["job_stocks"]))
+
+    # ---------------- SAVE JOB ----------------
+    if st.button("Save Job"):
+        processes_json = json.dumps(st.session_state["job_processes"])
+        stocks_json = json.dumps(st.session_state["job_stocks"])
+
+        fs_add(
+            "jobs",
+            {
+                "job_name": job_name,
+                "client_name": client_name,
+                "phone": phone,
+                "amount": amount,
+                "quantity": quantity,
+                "job_type": job_type,
+                "status": status,
+                "notes": "",
+                "user_email": user_email,
+                "created_at": datetime.utcnow().isoformat(),
+                "due_date": due_date.isoformat(),
+                "processes": processes_json,
+                "stocks_used": stocks_json,   # ⭐ save all stock items
+            },
         )
-        if selected_delete != "None":
-            idx = delete_options.index(selected_delete)
-            delete_id = stocks[idx]["id"]
-            if st.button("Delete Selected Stock"):
-                fs_delete("stocks", delete_id)
-                st.success("Stock deleted successfully!")
-                st.cache_data.clear()
-                st.rerun()
+
+        st.success("Job saved with processes + multi-stock!")
+
+        st.session_state["job_processes"] = []
+        st.session_state["job_stocks"] = []
+        st.cache_data.clear()
+
 
 # ----- VIEW JOBS -----
 elif page == "ViewJobs":
