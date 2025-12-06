@@ -4,9 +4,7 @@ import pandas as pd
 import json, os
 from datetime import datetime, date, time, timedelta
 
-# ============================================
-# APP SETTINGS
-# ============================================
+# ============ APP SETTINGS ============
 st.set_page_config(page_title="Factory Manager Pro", layout="wide")
 PROJECT_ID = "factory-ai-ab9fa"
 API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"
@@ -22,9 +20,7 @@ BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases
 SIGNUP_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}"
 SIGNIN_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={API_KEY}"
 
-# ============================================
-# CSS
-# ============================================
+# ============ CSS ============
 st.markdown("""
 <style>
 html,body,[class*="css"]{font-family:'Inter',sans-serif!important;}
@@ -71,23 +67,20 @@ if st.session_state["sidebar_collapsed"]:
     </style>
     """, unsafe_allow_html=True)
 
-# ============================================
-# SESSION INIT
-# ============================================
+# ============ SESSION INIT ============
 ss = st.session_state
 if "user" not in ss: ss["user"] = None
 if "page" not in ss: ss["page"] = "Dashboard"
 if "job_processes" not in ss: ss["job_processes"] = []
-if "job_stocks" not in ss: ss["job_stocks"] = []   # multi-stock per job
+if "job_stocks" not in ss: ss["job_stocks"] = []         # stocks attached to job
+if "new_stock_sizes" not in ss: ss["new_stock_sizes"] = []  # sizes while creating a stock
 if "last_ai_answer" not in ss: ss["last_ai_answer"] = ""
 if "last_plan_df" not in ss: ss["last_plan_df"] = []
 if "schedule_settings" not in ss:
     ss["schedule_settings"] = {"work_start": time(9,0), "work_end": time(17,0), "breaks": []}
 if "ai_history" not in ss: ss["ai_history"] = []
 
-# ============================================
-# SMALL UTILS
-# ============================================
+# ============ UTILS ============
 def safe_int(v):
     try: return int(v)
     except: return 0
@@ -96,17 +89,13 @@ def safe_float(v):
     try: return float(v)
     except: return 0.0
 
-# ============================================
-# AUTH
-# ============================================
+# ============ AUTH ============
 def signup(email,pw):
     return requests.post(SIGNUP_URL,json={"email":email,"password":pw,"returnSecureToken":True}).json()
 def login(email,pw):
     return requests.post(SIGNIN_URL,json={"email":email,"password":pw,"returnSecureToken":True}).json()
 
-# ============================================
-# FIRESTORE
-# ============================================
+# ============ FIRESTORE ============
 def fs_add(col,data):
     fields={k:{"stringValue":str(v)} for k,v in data.items()}
     requests.post(f"{BASE_URL}/{col}?key={API_KEY}",json={"fields":fields})
@@ -131,32 +120,49 @@ def fs_delete(col,id):
     requests.delete(f"{BASE_URL}/{col}/{id}?key={API_KEY}")
     st.cache_data.clear()
 
-# ============================================
-# STOCK
-# ============================================
+# ============ STOCK HELPERS (MULTI SIZE) ============
+def parse_sizes_field(s):
+    try:
+        d=json.loads(s)
+        if isinstance(d,list): return d
+    except:
+        pass
+    return []
+
 def get_user_stocks(email):
-    stocks=[s for s in fs_get("stocks") if s.get("user_email")==email]
-    for s in stocks:
-        s["quantity_float"]=safe_float(s.get("quantity",0))
-    return stocks
+    rows=[r for r in fs_get("stocks") if r.get("user_email")==email]
+    for r in rows:
+        sizes=parse_sizes_field(r.get("sizes","[]"))
+        r["sizes_list"]=sizes
+        r["quantity_total"]=sum(safe_float(z.get("qty",0)) for z in sizes)
+    return rows
 
 def adjust_stock_after_job_multi(stocks_used):
     if not stocks_used: return
     all_stocks=fs_get("stocks")
-    by_id={s["id"]:s for s in all_stocks}
-    for it in stocks_used:
-        sid=it.get("stock_id"); used=safe_float(it.get("use_qty",0))
+    for item in stocks_used:
+        sid=item.get("stock_id")
+        size_str=str(item.get("size",""))
+        used=safe_float(item.get("use_qty",0))
         if not sid or used<=0: continue
-        s=by_id.get(sid)
-        if not s: continue
-        current=safe_float(s.get("quantity",0))
-        rem=current-used
-        if rem<=0: fs_delete("stocks",sid)
-        else: fs_update("stocks",sid,{"quantity":rem})
+        for row in all_stocks:
+            if row["id"]!=sid: continue
+            sizes=parse_sizes_field(row.get("sizes","[]"))
+            new_sizes=[]
+            for z in sizes:
+                if str(z.get("size",""))==size_str:
+                    new_qty=safe_float(z.get("qty",0))-used
+                    if new_qty>0:
+                        new_sizes.append({"size":z.get("size",""),"qty":new_qty})
+                else:
+                    new_sizes.append(z)
+            if not new_sizes:
+                fs_delete("stocks",sid)
+            else:
+                fs_update("stocks",sid,{"sizes":json.dumps(new_sizes)})
+            break
 
-# ============================================
-# AI CONTEXT
-# ============================================
+# ============ AI CONTEXT ============
 def job_summary(email):
     jobs=[j for j in fs_get("jobs") if j.get("user_email")==email]
     if not jobs: return "No jobs in the system yet."
@@ -168,14 +174,15 @@ def job_summary(email):
 def stock_summary(email):
     stocks=get_user_stocks(email)
     if not stocks: return "No stock items currently available."
-    return "\n".join(
-        f"- {s.get('name','')} ({s.get('category','')}) Size {s.get('size','')} : {s['quantity_float']}"
-        for s in stocks
-    )
+    lines=[]
+    for s in stocks:
+        for z in s["sizes_list"]:
+            lines.append(
+                f"- {s.get('name','')} ({s.get('category','')}) size {z.get('size','')} qty {z.get('qty',0)}"
+            )
+    return "\n".join(lines)
 
-# ============================================
-# AI CHAT
-# ============================================
+# ============ AI CHAT ============
 def ask_ai(email,query):
     jobs_text=job_summary(email)
     stocks_text=stock_summary(email)
@@ -216,9 +223,7 @@ Use factory data when relevant. Otherwise treat it as a normal chat.
     ss["ai_history"]=history[-10:]
     return ans
 
-# ============================================
-# PLANNING HELPERS
-# ============================================
+# ============ PLANNING ============
 def parse_processes(s):
     try:
         d=json.loads(s)
@@ -330,9 +335,7 @@ def ui_time_picker_12(label:str, default:time, key_prefix:str)->time:
     h24=h%12+(12 if ap=="PM" else 0)
     return time(h24,m)
 
-# ============================================
-# LOGIN
-# ============================================
+# ============ LOGIN ============
 if ss["user"] is None:
     st.markdown('<div class="no-sidebar">',unsafe_allow_html=True)
     st.markdown('<div class="login-wrapper"><div class="login-card">',unsafe_allow_html=True)
@@ -357,9 +360,7 @@ if ss["user"] is None:
     st.markdown("</div></div></div>",unsafe_allow_html=True)
     st.stop()
 
-# ============================================
-# SIDEBAR
-# ============================================
+# ============ SIDEBAR ============
 with st.sidebar:
     c_tog,c_title=st.columns([1,4])
     with c_tog:
@@ -390,12 +391,10 @@ with st.sidebar:
         ss["user"]=None; ss["page"]="Dashboard"; st.rerun()
     st.markdown("</div>",unsafe_allow_html=True)
 
-# ============================================
-# MAIN PAGES
-# ============================================
+# ============ MAIN PAGES ============
 page=ss["page"]; user_email=ss["user"]
 
-# ---------- DASHBOARD ----------
+# ----- DASHBOARD -----
 if page=="Dashboard":
     st.title("📊 Dashboard")
     jobs=[j for j in fs_get("jobs") if j.get("user_email")==user_email]
@@ -410,7 +409,7 @@ if page=="Dashboard":
         st.subheader("All Jobs")
         st.dataframe(df,use_container_width=True)
 
-# ---------- ADD JOB ----------
+# ----- ADD JOB -----
 elif page=="AddJob":
     st.title("➕ Add New Job")
     job_name=st.text_input("Job Name")
@@ -436,34 +435,48 @@ elif page=="AddJob":
     else:
         st.caption("No processes added yet. Add steps above.")
 
+    # ----- STOCKS WITH SIZE -----
     st.markdown("### 🧰 Stock Used (optional, multi-stock)")
     stocks=get_user_stocks(user_email)
-    stock_labels=["None"]+[f"{s['name']} ({s.get('category','')}) — Size: {s.get('size','N/A')} — Qty: {s['quantity_float']}" for s in stocks]
+    stock_labels=["None"]+[f"{s['name']} ({s.get('category','')})" for s in stocks]
     sel_label=st.selectbox("Select Stock",stock_labels)
     use_qty=0.0
     if sel_label!="None":
         idx=stock_labels.index(sel_label)-1
         s=stocks[idx]
-        max_qty=s["quantity_float"]
-        use_qty=st.number_input("Quantity to use from this stock",min_value=0.0,max_value=max_qty,step=0.5)
-        if st.button("Add Stock to Job"):
-            if use_qty>0:
-                ss["job_stocks"].append({
-                    "stock_id":s["id"],
-                    "name":s["name"],
-                    "category":s.get("category",""),
-                    "size":s.get("size",""),
-                    "available_qty":max_qty,
-                    "use_qty":use_qty,
-                })
-            else:
-                st.warning("Use quantity must be > 0.")
+        sizes_list=s["sizes_list"]
+        if not sizes_list:
+            st.warning("This stock has no sizes. Go to Add / Manage Stock and add sizes.")
+        else:
+            size_labels=[f"{z.get('size','')} — Qty: {z.get('qty',0)}" for z in sizes_list]
+            sel_size_label=st.selectbox("Select Size",size_labels)
+            size_idx=size_labels.index(sel_size_label)
+            chosen=sizes_list[size_idx]
+            max_qty=safe_float(chosen.get("qty",0))
+            use_qty=st.number_input(
+                "Quantity to use from this size",
+                min_value=0.0,
+                max_value=max_qty,
+                step=0.5,
+            )
+            if st.button("Add Stock to Job"):
+                if use_qty>0:
+                    ss["job_stocks"].append({
+                        "stock_id":s["id"],
+                        "name":s["name"],
+                        "category":s.get("category",""),
+                        "size":chosen.get("size",""),
+                        "available_qty":max_qty,
+                        "use_qty":use_qty,
+                    })
+                else:
+                    st.warning("Use quantity must be > 0.")
 
     if ss["job_stocks"]:
         st.subheader("Stocks added to this job")
         st.table(pd.DataFrame(ss["job_stocks"])[["name","category","size","use_qty","available_qty"]])
     else:
-        st.caption("No stocks attached yet. Select stock & quantity, then click 'Add Stock to Job'.")
+        st.caption("No stocks attached yet. Select stock & size, enter quantity, then click 'Add Stock to Job'.")
 
     if st.button("Save Job"):
         proc_json=json.dumps(ss["job_processes"])
@@ -484,44 +497,70 @@ elif page=="AddJob":
             "stocks_used":stocks_json,
         })
         adjust_stock_after_job_multi(ss["job_stocks"])
-        ss["job_processes"]=[]
-        ss["job_stocks"]=[]
+        ss["job_processes"]=[]; ss["job_stocks"]=[]
         st.cache_data.clear()
         st.success("Job with processes and stocks saved!")
 
-# ---------- ADD STOCK ----------
+# ----- ADD STOCK (MULTI SIZE) -----
 elif page=="AddStock":
     st.title("📦 Add / Manage Stock")
     st.subheader("Add New Stock Item")
     s_name=st.text_input("Stock Name")
     s_category=st.text_input("Category")
-    s_size=st.text_input("Size (optional)")
-    s_qty=st.number_input("Quantity / Weight",min_value=0.0,step=0.5)
+
+    st.markdown("### Sizes for this stock")
+    c1,c2,c3=st.columns([2,2,1])
+    with c1:
+        size_val=st.text_input("Size",key="new_stock_size")
+    with c2:
+        qty_val=st.number_input("Quantity / Weight",min_value=0.0,step=0.5,key="new_stock_qty")
+    with c3:
+        st.write("")
+        if st.button("Add Size"):
+            if size_val and qty_val>0:
+                ss["new_stock_sizes"].append({"size":size_val,"qty":qty_val})
+            else:
+                st.warning("Enter size and quantity > 0 before adding.")
+
+    if ss["new_stock_sizes"]:
+        st.table(pd.DataFrame(ss["new_stock_sizes"]))
+    else:
+        st.caption("No sizes added yet. Add at least one size before saving stock.")
+
     if st.button("Save Stock"):
-        fs_add("stocks",{
-            "name":s_name,
-            "category":s_category,
-            "size":s_size,
-            "quantity":s_qty,
-            "user_email":user_email,
-            "created_at":datetime.utcnow().isoformat(),
-        })
-        st.success("Stock saved!"); st.cache_data.clear()
-    st.subheader("Current Stock")
+        if not s_name:
+            st.error("Stock name is required.")
+        elif not ss["new_stock_sizes"]:
+            st.error("Add at least one size for this stock.")
+        else:
+            fs_add("stocks",{
+                "name":s_name,
+                "category":s_category,
+                "sizes":json.dumps(ss["new_stock_sizes"]),
+                "user_email":user_email,
+                "created_at":datetime.utcnow().isoformat(),
+            })
+            ss["new_stock_sizes"]=[]
+            st.success("Stock saved!")
+            st.cache_data.clear()
+
+    st.subheader("Current Stock (per size)")
     stocks=get_user_stocks(user_email)
     if not stocks:
         st.info("No stock items yet.")
     else:
-        df_s=pd.DataFrame([{
-            "Name":s["name"],
-            "Category":s.get("category",""),
-            "Size":s.get("size",""),
-            "Quantity":s["quantity_float"],
-            "id":s["id"],
-        } for s in stocks])
-        st.dataframe(df_s.drop(columns=["id"]),use_container_width=True)
+        rows=[]
+        for s in stocks:
+            for z in s["sizes_list"]:
+                rows.append({
+                    "Name":s["name"],
+                    "Category":s.get("category",""),
+                    "Size":z.get("size",""),
+                    "Quantity":z.get("qty",0),
+                })
+        st.dataframe(pd.DataFrame(rows),use_container_width=True)
 
-# ---------- VIEW JOBS ----------
+# ----- VIEW JOBS -----
 elif page=="ViewJobs":
     st.title("📋 Manage Jobs")
     jobs=[j for j in fs_get("jobs") if j.get("user_email")==user_email]
@@ -548,7 +587,7 @@ elif page=="ViewJobs":
         if st.button("Delete Job"):
             fs_delete("jobs",job_id); st.warning("Job deleted!")
 
-# ---------- AI CHAT ----------
+# ----- AI CHAT -----
 elif page=="AI":
     st.title("🤖 AI Chat (smart, with memory + auto plan)")
     st.subheader("💬 Type to AI")
@@ -573,7 +612,7 @@ elif page=="AI":
         for t in ss["ai_history"][-5:]:
             st.markdown(f"**You:** {t['user']}"); st.markdown(f"**AI:** {t['assistant']}")
 
-# ---------- AI PRODUCTION PLAN ----------
+# ----- AI PLAN -----
 elif page=="AIPlan":
     st.title("📅 AI Production Plan")
     st.write("This uses all jobs, their processes, durations, and due dates to build a schedule based on your working hours and breaks.")
