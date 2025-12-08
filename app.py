@@ -322,6 +322,8 @@ def generate_schedule(email, settings):
             else:
                 staff_list = []
 
+            outsiders = safe_int(p.get("outsiders", 0))
+
             tasks.append(
                 {
                     "job_id": j["id"],
@@ -329,6 +331,7 @@ def generate_schedule(email, settings):
                     "process": p.get("name", "").strip(),
                     "hours": hours,
                     "staff": staff_list,
+                    "outsiders": outsiders,
                     "proc_index": idx,
                 }
             )
@@ -419,15 +422,13 @@ def generate_schedule(email, settings):
                     start_dt = current_time
                     end_dt = start_dt + timedelta(hours=needed)
 
-                    label = t["process"]
-                    if t["staff"]:
-                        label = f"{label} (Staff: {', '.join(t['staff'])})"
-
                     schedule_rows.append(
                         {
                             "Date": today_str,
                             "Job": t["job_name"],
-                            "Process": label,
+                            "Process": t["process"],
+                            "Staff": ", ".join(t["staff"]) if t["staff"] else "",
+                            "Outsiders": t["outsiders"],
                             "Start": start_dt.strftime("%I:%M %p"),
                             "End": end_dt.strftime("%I:%M %p"),
                             "Due Date": job_due_map.get(t["job_id"], ""),
@@ -458,6 +459,8 @@ def generate_schedule(email, settings):
                 "Date": today_str,
                 "Job": "",
                 "Process": "Break",
+                "Staff": "",
+                "Outsiders": 0,
                 "Start": bs.strftime("%I:%M %p"),
                 "End": be.strftime("%I:%M %p"),
                 "Due Date": "",
@@ -652,7 +655,7 @@ elif page == "AddJob":
     staff_members = get_user_staff(email)
     staff_names = [s["name"] for s in staff_members]
 
-    c1, c2, c3, c4 = st.columns([3, 1, 2, 1])
+    c1, c2, c3, c4, c5 = st.columns([3, 1, 2, 2, 1])
     with c1:
         pname = st.text_input("Process Name")
     with c2:
@@ -660,6 +663,8 @@ elif page == "AddJob":
     with c3:
         selected_staff = st.multiselect("Staff", staff_names, key="proc_staff")
     with c4:
+        outsider_count = st.number_input("Outsiders", min_value=0, max_value=50, step=1)
+    with c5:
         if st.button("Add Process"):
             if pname and phours > 0:
                 ss["job_processes"].append(
@@ -667,6 +672,7 @@ elif page == "AddJob":
                         "name": pname,
                         "hours": phours,
                         "staff": selected_staff,
+                        "outsiders": outsider_count,
                         "completed": False,
                         "defer_until": "",
                     }
@@ -965,8 +971,35 @@ Instructions:
     st.subheader("Today's Plan")
 
     if isinstance(ss.get("last_plan_df"), pd.DataFrame) and not ss["last_plan_df"].empty:
+        base_df = ss["last_plan_df"].copy()
+
+        # Toggle: merge staff & outsiders into process label or not
+        merge_toggle = st.checkbox(
+            "Merge Staff & Outsiders into Process label", value=False
+        )
+
+        if merge_toggle:
+            def build_label(row):
+                label = row.get("Process", "")
+                parts = []
+                staff = row.get("Staff", "")
+                outs = row.get("Outsiders", 0)
+                try:
+                    outs_int = int(outs)
+                except Exception:
+                    outs_int = 0
+                if staff:
+                    parts.append(f"Staff: {staff}")
+                if outs_int > 0:
+                    parts.append(f"Outsiders: {outs_int}")
+                if parts:
+                    return f"{label} ({', '.join(parts)})"
+                return label
+
+            base_df["Process"] = base_df.apply(build_label, axis=1)
+
         edited_df = st.data_editor(
-            ss["last_plan_df"],
+            base_df,
             use_container_width=True,
             hide_index=True,
             column_config={
