@@ -24,7 +24,7 @@ if not OPENROUTER_KEY:
 # Firebase
 BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
 SIGNUP_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}"
-SIGNIN_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={API_KEY}"
+SIGNIN_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}"
 
 # =========================================
 # CSS
@@ -295,7 +295,7 @@ def time_picker(label, default, key):
 
 
 # =========================================
-# SCHEDULER
+# SCHEDULER (real dates, skip completed processes)
 # =========================================
 def next_valid_interval(current_dt, duration_hours, settings):
     """Find next [start, end] that fits in work hours and avoids breaks."""
@@ -338,13 +338,7 @@ def next_valid_interval(current_dt, duration_hours, settings):
 
 
 def generate_schedule(email, settings):
-    """Deterministic plan:
-    - Get all jobs + processes
-    - Determine global process order from first job's process order
-    - Group all tasks by process type
-    - Schedule sequentially using work hours + breaks
-    - Staff list is only for display (doesn't change duration)
-    """
+    """Deterministic plan with real dates and per-process completion."""
     jobs = [j for j in fs_get("jobs") if j.get("user_email") == email]
     if not jobs:
         return pd.DataFrame()
@@ -358,10 +352,9 @@ def generate_schedule(email, settings):
 
     jobs_sorted = sorted(jobs, key=parse_due)
 
-    # map job -> due date string
     job_due_map = {j["job_name"]: j.get("due_date", "") for j in jobs_sorted}
 
-    # make list of tasks
+    # collect tasks (only incomplete processes)
     tasks = []
     for j in jobs_sorted:
         try:
@@ -372,6 +365,10 @@ def generate_schedule(email, settings):
             hours = safe_float(p.get("hours", 0))
             if hours <= 0:
                 continue
+
+            completed = bool(p.get("completed", False))
+            if completed:
+                continue  # already done, don't schedule
 
             raw_staff = p.get("staff", [])
             if isinstance(raw_staff, str):
@@ -393,7 +390,7 @@ def generate_schedule(email, settings):
     if not tasks:
         return pd.DataFrame()
 
-    # global process order: order they appear in FIRST job, then others
+    # global process order from first job, then others
     process_order = []
     for j in jobs_sorted:
         try:
@@ -410,7 +407,6 @@ def generate_schedule(email, settings):
             process_order.append(t["process"])
 
     job_order_index = {j["job_name"]: idx for idx, j in enumerate(jobs_sorted)}
-
     tasks_sorted = sorted(
         tasks, key=lambda t: job_order_index.get(t["job_name"], 9999)
     )
@@ -419,8 +415,8 @@ def generate_schedule(email, settings):
     for t in tasks_sorted:
         process_to_tasks.setdefault(t["process"], []).append(t)
 
-    start_date = date.today()
-    current_dt = datetime.combine(start_date, settings["work_start"])
+    # schedule starting from TODAY, with real calendar dates
+    current_dt = datetime.combine(date.today(), settings["work_start"])
 
     schedule_rows = []
     for proc in process_order:
@@ -428,7 +424,6 @@ def generate_schedule(email, settings):
             if t["hours"] <= 0:
                 continue
             start_dt, end_dt = next_valid_interval(current_dt, t["hours"], settings)
-            day_index = (start_dt.date() - start_date).days + 1
 
             process_label = t["process"]
             if t["staff"]:
@@ -436,7 +431,7 @@ def generate_schedule(email, settings):
 
             schedule_rows.append(
                 {
-                    "Day": f"Day {day_index}",
+                    "Date": start_dt.date().isoformat(),
                     "Job": t["job_name"],
                     "Process": process_label,
                     "Start": start_dt.strftime("%I:%M %p"),
@@ -630,6 +625,7 @@ elif page == "AddJob":
                         "name": pname,
                         "hours": phours,
                         "staff": selected_staff,   # list of names
+                        "completed": False,        # NEW: default not done
                     }
                 )
             else:
@@ -794,7 +790,7 @@ elif page == "AddStock":
         st.info("No stock yet")
 
 # =========================================
-# VIEW JOBS
+# VIEW JOBS (includes process completion toggles)
 # =========================================
 elif page == "ViewJobs":
     st.title("📋 Jobs")
@@ -838,18 +834,48 @@ elif page == "ViewJobs":
             st.rerun()
 
         st.subheader("Processes for this Job")
+
         try:
             process_list = json.loads(job.get("processes", "[]"))
         except Exception:
             process_list = []
 
         if process_list:
-            st.table(pd.DataFrame(process_list))
+            # show completion checkboxes
+            updated_flags = []
+            for i, p in enumerate(process_list):
+                name = p.get("name", "")
+                hours = p.get("hours", 0)
+                staff = p.get("staff", [])
+                if isinstance(staff, list):
+                    staff_str = ", ".join(staff)
+                else:
+                    staff_str = str(staff)
+                completed = bool(p.get("completed", False))
+
+                label = f"{name} — {hours}h — Staff: {staff_str}"
+                chk = st.checkbox(
+                    label,
+                    value=completed,
+                    key=f"proc_done_{job['id']}_{i}",
+                )
+                updated_flags.append(chk)
+
+            if st.button("Save Process Completion"):
+                for i, flag in enumerate(updated_flags):
+                    process_list[i]["completed"] = flag
+                fs_update("jobs", sel, {"processes": json.dumps(process_list)})
+                st.success("Process completion updated")
+                st.rerun()
+
+            # display table too
+            df_proc = pd.DataFrame(process_list)
+            st.table(df_proc)
         else:
             st.info("No processes added for this job.")
 
 # =========================================
-# AI CHAT (Q&A only – no plan button here)
+# AI CHAT (Q&A only)
 # =========================================
 elif page == "AI":
     st.title("🤖 AI Chat")
@@ -921,7 +947,7 @@ elif page == "AIPlan":
     if st.button("Generate Production Plan"):
         df_plan = generate_schedule(email, ss["schedule_settings"])
         if df_plan.empty:
-            st.info("No jobs or processes to schedule.")
+            st.info("No jobs or incomplete processes to schedule.")
         else:
             ss["last_plan_df"] = df_plan
 
