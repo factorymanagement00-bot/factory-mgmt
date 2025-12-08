@@ -13,14 +13,13 @@ st.set_page_config(page_title="Factory Manager Pro", layout="wide")
 PROJECT_ID = "factory-ai-ab9fa"
 API_KEY = "AIzaSyBCO9BMXJ3zJ8Ae0to4VJPXAYgYn4CHl58"
 
-# OpenRouter API KEY
+# OpenRouter API KEY (for AI chat only)
 OPENROUTER_KEY = os.getenv("OPENROUTER_KEY")
 if not OPENROUTER_KEY:
     try:
         OPENROUTER_KEY = st.secrets["openrouter_key"]
     except Exception:
-        st.error("OPENROUTER_KEY not found. Add it to secrets or env.")
-        st.stop()
+        OPENROUTER_KEY = None  # AI Chat will show error message instead of crashing
 
 # Firebase
 BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
@@ -57,8 +56,8 @@ defaults = {
     "job_stocks": [],
     "new_stock_sizes": [],
     "last_ai_answer": "",
-    "last_plan_df": None,  # DataFrame with AI plan
-    "last_plan": "",       # raw AI text (optional)
+    "last_plan_df": None,  # DataFrame with plan
+    "last_plan": "",       # not used now but kept for compatibility
     "schedule_settings": {
         "work_start": time(9, 0),
         "work_end": time(17, 0),
@@ -137,7 +136,7 @@ def fs_delete(col, id):
 
 
 # =========================================
-# STOCK HELPERS (MULTI-SIZE)
+# STOCK + STAFF HELPERS
 # =========================================
 def parse_sizes(s):
     try:
@@ -195,8 +194,13 @@ def adjust_stock_after_job_multi(stocks_used):
             break
 
 
+def get_user_staff(email):
+    """All staff for this user."""
+    return [r for r in fs_get("staff") if r.get("user_email") == email]
+
+
 # =========================================
-# AI SECTION
+# AI SECTION (only for chat, NOT for schedule)
 # =========================================
 def job_summary(email):
     jobs = [j for j in fs_get("jobs") if j.get("user_email") == email]
@@ -220,6 +224,9 @@ def stock_summary(email):
 
 
 def ask_ai(email, query):
+    if not OPENROUTER_KEY:
+        return "OPENROUTER_KEY not set. Configure it in your environment or Streamlit secrets."
+
     system_prompt = "You are FactoryGPT — expert in factory workflows, stock, jobs, and planning."
     messages = [{"role": "system", "content": system_prompt}]
     for t in ss["ai_history"]:
@@ -288,6 +295,155 @@ def time_picker(label, default, key):
 
 
 # =========================================
+# SCHEDULER (replaces AI-generated plan)
+# =========================================
+def next_valid_interval(current_dt, duration_hours, settings):
+    """Find next [start, end] that fits in work hours and avoids breaks."""
+    work_start_t = settings["work_start"]
+    work_end_t = settings["work_end"]
+    breaks = settings["breaks"]
+
+    while True:
+        day = current_dt.date()
+        ws = datetime.combine(day, work_start_t)
+        we = datetime.combine(day, work_end_t)
+        break_intervals = [
+            (datetime.combine(day, b1), datetime.combine(day, b2))
+            for (b1, b2) in breaks
+        ]
+
+        # move to work start if before
+        if current_dt < ws:
+            current_dt = ws
+
+        # if after work end -> next day work start
+        if current_dt >= we:
+            current_dt = datetime.combine(day + timedelta(days=1), work_start_t)
+            continue
+
+        end_candidate = current_dt + timedelta(hours=duration_hours)
+
+        # crosses end of day
+        if end_candidate > we:
+            current_dt = datetime.combine(day + timedelta(days=1), work_start_t)
+            continue
+
+        # break overlap?
+        overlap_found = False
+        for bstart, bend in break_intervals:
+            if current_dt < bend and end_candidate > bstart:
+                # move start to after break and retry
+                current_dt = bend
+                overlap_found = True
+                break
+        if overlap_found:
+            continue
+
+        return current_dt, end_candidate
+
+
+def generate_schedule(email, settings):
+    """Deterministic plan:
+    - Get all jobs + processes
+    - Determine global process order from first job's process order
+    - Group all tasks by process type
+    - Schedule sequentially using work hours + breaks
+    """
+    jobs = [j for j in fs_get("jobs") if j.get("user_email") == email]
+    if not jobs:
+        return pd.DataFrame()
+
+    # sort jobs by due date so earlier jobs get earlier slots
+    def parse_due(j):
+        try:
+            return datetime.fromisoformat(j.get("due_date"))
+        except Exception:
+            return datetime.max
+
+    jobs_sorted = sorted(jobs, key=parse_due)
+
+    # make list of tasks
+    tasks = []
+    for j in jobs_sorted:
+        try:
+            procs = json.loads(j.get("processes", "[]"))
+        except Exception:
+            procs = []
+        for p in procs:
+            hours = safe_float(p.get("hours", 0))
+            if hours <= 0:
+                continue
+            tasks.append(
+                {
+                    "job_name": j["job_name"],
+                    "process": p.get("name", "").strip(),
+                    "hours": hours,
+                    "staff": p.get("staff", "").strip(),
+                }
+            )
+
+    if not tasks:
+        return pd.DataFrame()
+
+    # global process order: order they appear in FIRST job, then others
+    process_order = []
+    for j in jobs_sorted:
+        try:
+            procs = json.loads(j.get("processes", "[]"))
+        except Exception:
+            procs = []
+        for p in procs:
+            name = p.get("name", "").strip()
+            if name and name not in process_order:
+                process_order.append(name)
+
+    # make sure all process names exist in order list
+    for t in tasks:
+        if t["process"] and t["process"] not in process_order:
+            process_order.append(t["process"])
+
+    # map job name -> order index
+    job_order_index = {j["job_name"]: idx for idx, j in enumerate(jobs_sorted)}
+
+    # sort tasks inside each process by job order
+    tasks_sorted = sorted(
+        tasks, key=lambda t: job_order_index.get(t["job_name"], 9999)
+    )
+
+    process_to_tasks = {p: [] for p in process_order}
+    for t in tasks_sorted:
+        process_to_tasks.setdefault(t["process"], []).append(t)
+
+    # scheduling loop
+    start_date = date.today()
+    current_dt = datetime.combine(start_date, settings["work_start"])
+
+    schedule_rows = []
+    for proc in process_order:
+        for t in process_to_tasks.get(proc, []):
+            if t["hours"] <= 0:
+                continue
+            start_dt, end_dt = next_valid_interval(current_dt, t["hours"], settings)
+            day_index = (start_dt.date() - start_date).days + 1
+            process_label = t["process"]
+            if t["staff"]:
+                process_label = f"{process_label} (Staff: {t['staff']})"
+
+            schedule_rows.append(
+                {
+                    "Day": f"Day {day_index}",
+                    "Job": t["job_name"],
+                    "Process": process_label,
+                    "Start": start_dt.strftime("%I:%M %p"),
+                    "End": end_dt.strftime("%I:%M %p"),
+                }
+            )
+            current_dt = end_dt
+
+    return pd.DataFrame(schedule_rows)
+
+
+# =========================================
 # LOGIN PAGE
 # =========================================
 if ss["user"] is None:
@@ -334,6 +490,7 @@ with st.sidebar:
 
     st.markdown("### 📦 Factory Menu")
     nav("Dashboard", "🏠", "Dashboard")
+    nav("Staff", "👷", "Staff")
     nav("Add Job", "➕", "AddJob")
     nav("Add Stock", "📦", "AddStock")
     nav("View Jobs", "📋", "ViewJobs")
@@ -384,6 +541,54 @@ if page == "Dashboard":
         st.dataframe(df_show, use_container_width=True)
 
 # =========================================
+# STAFF PAGE
+# =========================================
+elif page == "Staff":
+    st.title("👷 Staff")
+
+    st.subheader("Add Staff Member")
+    s_name = st.text_input("Staff Name")
+    s_role = st.text_input("Role / Skill")
+    s_status = st.selectbox("Status", ["Active", "Inactive"])
+
+    if st.button("Save Staff"):
+        if not s_name:
+            st.error("Enter staff name")
+        else:
+            fs_add(
+                "staff",
+                {
+                    "name": s_name,
+                    "role": s_role,
+                    "status": s_status,
+                    "user_email": email,
+                    "created_at": datetime.utcnow().isoformat(),
+                },
+            )
+            st.success("Staff saved")
+            st.rerun()
+
+    st.subheader("Current Staff")
+    staff = get_user_staff(email)
+    if staff:
+        df = pd.DataFrame(staff)
+        show_cols = ["name", "role", "status", "id"]
+        st.dataframe(df[show_cols], use_container_width=True)
+
+        del_map = {"None": None}
+        for s in staff:
+            label = f"{s['name']} ({s.get('role','')})"
+            del_map[label] = s["id"]
+
+        sel_del = st.selectbox("Delete Staff", list(del_map.keys()))
+        if sel_del != "None" and st.button("Delete Selected Staff"):
+            fs_delete("staff", del_map[sel_del])
+            st.success("Staff deleted")
+            st.rerun()
+    else:
+        st.info("No staff added yet.")
+
+# =========================================
 # ADD JOB PAGE
 # =========================================
 elif page == "AddJob":
@@ -401,15 +606,23 @@ elif page == "AddJob":
     # PROCESSES
     st.subheader("🧩 Job Processes")
 
-    c1, c2, c3 = st.columns([3, 1, 1])
+    staff_members = get_user_staff(email)
+    staff_names = ["Unassigned"] + [s["name"] for s in staff_members]
+
+    c1, c2, c3, c4 = st.columns([3, 1, 2, 1])
     with c1:
         pname = st.text_input("Process Name")
     with c2:
         phours = st.number_input("Hours", min_value=0.0, step=0.25)
     with c3:
+        sel_staff = st.selectbox("Staff", staff_names)
+    with c4:
         if st.button("Add Process"):
             if pname and phours > 0:
-                ss["job_processes"].append({"name": pname, "hours": phours})
+                staff_value = "" if sel_staff == "Unassigned" else sel_staff
+                ss["job_processes"].append(
+                    {"name": pname, "hours": phours, "staff": staff_value}
+                )
             else:
                 st.warning("Enter valid process name & hours.")
 
@@ -458,7 +671,6 @@ elif page == "AddJob":
                 st.warning("Quantity must be > 0.")
 
     if ss["job_stocks"]:
-
         st.subheader("Selected Stock")
         st.table(pd.DataFrame(ss["job_stocks"]))
 
@@ -480,7 +692,6 @@ elif page == "AddJob":
                 "due_date": due.isoformat(),
                 "processes": json.dumps(ss["job_processes"]),
                 "stocks_used": json.dumps(ss["job_stocks"]),
-
             },
         )
 
@@ -557,7 +768,7 @@ elif page == "AddStock":
             use_container_width=True,
         )
 
-        # -------- FIXED DELETE STOCK DROPDOWN (readable labels) --------
+        # readable delete dropdown
         label_to_id = {"None": None}
         for s in items:
             size_desc = " | ".join(
@@ -586,7 +797,6 @@ elif page == "ViewJobs":
     else:
         df = pd.DataFrame(jobs)
 
-        # Keep 'processes' so we can show it below, but hide in main table
         hide = ["user_email", "stocks_used", "created_at"]
         df_show = df.drop(columns=[c for c in hide if c in df.columns])
         st.dataframe(df_show, use_container_width=True)
@@ -619,7 +829,6 @@ elif page == "ViewJobs":
             st.success("Job removed")
             st.rerun()
 
-        # -------- NEW: SHOW PROCESSES TABLE FOR SELECTED JOB --------
         st.subheader("Processes for this Job")
         try:
             process_list = json.loads(job.get("processes", "[]"))
@@ -632,7 +841,7 @@ elif page == "ViewJobs":
             st.info("No processes added for this job.")
 
 # =========================================
-# AI CHAT (ONLY AI PLAN GENERATOR)
+# AI CHAT (ONLY QA, NOT PLANNER)
 # =========================================
 elif page == "AI":
     st.title("🤖 AI Chat")
@@ -645,117 +854,8 @@ elif page == "AI":
         st.write("### Reply:")
         st.write(ans)
 
-    st.markdown("---")
-    st.subheader("📅 AI Powered Production Plan")
-
-    if st.button("Generate AI Plan"):
-        st.info("Generating AI Plan...")
-
-        jobs_text = job_summary(email)
-        stock_text = stock_summary(email)
-        settings = ss["schedule_settings"]
-
-        start = settings["work_start"].strftime("%I:%M %p")
-        end = settings["work_end"].strftime("%I:%M %p")
-        break_text = "\n".join(
-            f"- {b1.strftime('%I:%M %p')} to {b2.strftime('%I:%M %p')}"
-            for b1, b2 in settings["breaks"]
-        )
-
-        prompt = f"""
-Create a factory production plan for this cardboard box factory.
-
-Working hours: {start} to {end}
-Breaks:
-{break_text if break_text else "None"}
-
-Jobs:
-{jobs_text}
-
-Stock:
-{stock_text}
-
-Make a detailed schedule with exact timings (HH:MM AM/PM) for each process in every job.
-Include breaks also in the schedule.
-
-Very important:
-- Each line MUST be in the format:
-  process_name : HH:MM AM -> HH:MM PM
-- If the line is a break, include the word "break" in the process name.
-- Group processes under job headers like:
-  === Job Name ===
-"""
-
-        ai_plan_text = ask_ai(email, prompt)
-
-        if not ai_plan_text or ai_plan_text.strip() == "":
-            st.error("AI did not return any response. Check your OPENROUTER_KEY.")
-        else:
-            # --------------------------
-            # PARSE AI PLAN INTO TABLE
-            # --------------------------
-            rows = []
-            current_job = ""
-
-            for line in ai_plan_text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-
-                # Detect job header like === jobname ===
-                if line.startswith("===") and line.endswith("==="):
-                    current_job = line.replace("=", "").strip()
-                    continue
-
-                # detect lines with times
-                if ":" in line and ("AM" in line or "PM" in line):
-                    try:
-                        item_name, times = line.split(":", 1)
-                        item_name = item_name.strip()
-
-                        # normalize arrow
-                        times = times.replace("→", "->")
-                        if "->" not in times:
-                            continue
-
-                        start_t, end_t = times.split("->", 1)
-                        start_t = start_t.strip()
-                        end_t = end_t.strip()
-
-                        # identify break lines (no job name)
-                        if "break" in item_name.lower():
-                            rows.append({
-                                "Job": "",
-                                "Process": item_name,
-                                "Start": start_t,
-                                "End": end_t
-                            })
-                        else:
-                            rows.append({
-                                "Job": current_job,
-                                "Process": item_name,
-                                "Start": start_t,
-                                "End": end_t
-                            })
-
-                    except Exception:
-                        # ignore badly formatted lines
-                        pass
-
-            if rows:
-                df = pd.DataFrame(rows)
-                ss["last_plan_df"] = df
-                ss["last_plan"] = ai_plan_text
-
-                st.success("AI Plan Generated!")
-                st.dataframe(df, use_container_width=True)
-            else:
-                ss["last_plan"] = ai_plan_text
-                st.warning("AI returned response but no valid schedule lines were detected.")
-                st.write(ai_plan_text)
-
 # =========================================
-# AI PRODUCTION PLAN (VIEW AI TABLE + SETTINGS)
+# AI PRODUCTION PLAN (now uses scheduler)
 # =========================================
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
@@ -808,9 +908,21 @@ elif page == "AIPlan":
     }
 
     st.markdown("---")
+    st.subheader("Generate Plan")
+
+    if st.button("Generate Production Plan"):
+        df_plan = generate_schedule(email, ss["schedule_settings"])
+        if df_plan.empty:
+            st.info("No jobs or processes to schedule.")
+        else:
+            ss["last_plan_df"] = df_plan
+            st.success("Plan generated!")
+            st.dataframe(df_plan, use_container_width=True)
+
+    st.markdown("---")
     st.subheader("Current AI Plan")
 
     if isinstance(ss.get("last_plan_df"), pd.DataFrame) and not ss["last_plan_df"].empty:
         st.dataframe(ss["last_plan_df"], use_container_width=True)
     else:
-        st.info("No AI plan yet. Go to 'AI Chat' and click 'Generate AI Plan'.")
+        st.info("No plan yet. Click 'Generate Production Plan'.")
