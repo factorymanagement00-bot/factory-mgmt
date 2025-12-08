@@ -254,7 +254,6 @@ Stock:
     try:
         ans = r["choices"][0]["message"]["content"]
     except Exception:
-        # Show raw error if any
         ans = f"AI error. Raw response: {r}"
     ss["ai_history"].append({"user": query, "assistant": ans})
     ss["ai_history"] = ss["ai_history"][-10:]
@@ -459,6 +458,7 @@ elif page == "AddJob":
                 st.warning("Quantity must be > 0.")
 
     if ss["job_stocks"]:
+
         st.subheader("Selected Stock")
         st.table(pd.DataFrame(ss["job_stocks"]))
 
@@ -480,6 +480,7 @@ elif page == "AddJob":
                 "due_date": due.isoformat(),
                 "processes": json.dumps(ss["job_processes"]),
                 "stocks_used": json.dumps(ss["job_stocks"]),
+
             },
         )
 
@@ -556,11 +557,18 @@ elif page == "AddStock":
             use_container_width=True,
         )
 
-        del_stock = st.selectbox(
-            "Delete Stock", ["None"] + list(df["StockID"].unique())
-        )
-        if del_stock != "None" and st.button("Delete"):
-            fs_delete("stocks", del_stock)
+        # -------- FIXED DELETE STOCK DROPDOWN (readable labels) --------
+        label_to_id = {"None": None}
+        for s in items:
+            size_desc = " | ".join(
+                [f"{z['size']} ({z['qty']})" for z in s["sizes_list"]]
+            )
+            label = f"{s['name']} — {size_desc}"
+            label_to_id[label] = s["id"]
+
+        selected_label = st.selectbox("Delete Stock", list(label_to_id.keys()))
+        if selected_label != "None" and st.button("Delete"):
+            fs_delete("stocks", label_to_id[selected_label])
             st.success("Deleted")
             st.rerun()
     else:
@@ -577,7 +585,9 @@ elif page == "ViewJobs":
         st.info("No jobs yet")
     else:
         df = pd.DataFrame(jobs)
-        hide = ["user_email", "processes", "stocks_used", "created_at"]
+
+        # Keep 'processes' so we can show it below, but hide in main table
+        hide = ["user_email", "stocks_used", "created_at"]
         df_show = df.drop(columns=[c for c in hide if c in df.columns])
         st.dataframe(df_show, use_container_width=True)
 
@@ -608,6 +618,18 @@ elif page == "ViewJobs":
             fs_delete("jobs", sel)
             st.success("Job removed")
             st.rerun()
+
+        # -------- NEW: SHOW PROCESSES TABLE FOR SELECTED JOB --------
+        st.subheader("Processes for this Job")
+        try:
+            process_list = json.loads(job.get("processes", "[]"))
+        except Exception:
+            process_list = []
+
+        if process_list:
+            st.table(pd.DataFrame(process_list))
+        else:
+            st.info("No processes added for this job.")
 
 # =========================================
 # AI CHAT (ONLY AI PLAN GENERATOR)
