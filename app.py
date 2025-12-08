@@ -24,7 +24,7 @@ if not OPENROUTER_KEY:
 # Firebase
 BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
 SIGNUP_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}"
-SIGNIN_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}"
+SIGNIN_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={API_KEY}"
 
 # =========================================
 # CSS
@@ -56,8 +56,9 @@ defaults = {
     "job_stocks": [],
     "new_stock_sizes": [],
     "last_ai_answer": "",
-    "last_plan_df": None,      # DataFrame with plan
+    "last_plan_df": None,      # DataFrame with plan (visible columns)
     "last_plan_review": "",    # AI's review text
+    "plan_row_meta": [],       # mapping for each row to (job_id, proc_index) or None
     "schedule_settings": {
         "work_start": time(9, 0),
         "work_end": time(17, 0),
@@ -268,80 +269,23 @@ Stock:
 
 
 # =========================================
-# TIME PICKER 12-HOUR
+# SCHEDULER (TODAY ONLY, breaks, defer_until, per-process completion)
 # =========================================
-def time_picker(label, default, key):
-    h24 = default.hour
-    h12 = h24 % 12 or 12
-    ap = "AM" if h24 < 12 else "PM"
-
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c1:
-        h = st.selectbox(f"{label} Hour", list(range(1, 13)), index=h12 - 1, key=f"{key}_h")
-    with c2:
-        m = st.selectbox(
-            f"{label} Min", [0, 15, 30, 45], index=0, key=f"{key}_m"
-        )
-    with c3:
-        ap_sel = st.selectbox(
-            f"{label} AM/PM",
-            ["AM", "PM"],
-            index=0 if ap == "AM" else 1,
-            key=f"{key}_ap",
-        )
-
-    h24_new = h % 12 + (12 if ap_sel == "PM" else 0)
-    return time(h24_new, m)
-
-
-# =========================================
-# SCHEDULER (real dates, skip completed processes)
-# =========================================
-def next_valid_interval(current_dt, duration_hours, settings):
-    """Find next [start, end] that fits in work hours and avoids breaks."""
-    work_start_t = settings["work_start"]
-    work_end_t = settings["work_end"]
-    breaks = settings["breaks"]
-
-    while True:
-        day = current_dt.date()
-        ws = datetime.combine(day, work_start_t)
-        we = datetime.combine(day, work_end_t)
-        break_intervals = [
-            (datetime.combine(day, b1), datetime.combine(day, b2))
-            for (b1, b2) in breaks
-        ]
-
-        if current_dt < ws:
-            current_dt = ws
-
-        if current_dt >= we:
-            current_dt = datetime.combine(day + timedelta(days=1), work_start_t)
-            continue
-
-        end_candidate = current_dt + timedelta(hours=duration_hours)
-
-        if end_candidate > we:
-            current_dt = datetime.combine(day + timedelta(days=1), work_start_t)
-            continue
-
-        overlap_found = False
-        for bstart, bend in break_intervals:
-            if current_dt < bend and end_candidate > bstart:
-                current_dt = bend
-                overlap_found = True
-                break
-        if overlap_found:
-            continue
-
-        return current_dt, end_candidate
-
-
 def generate_schedule(email, settings):
-    """Deterministic plan with real dates and per-process completion."""
-    jobs = [j for j in fs_get("jobs") if j.get("user_email") == email]
-    if not jobs:
-        return pd.DataFrame()
+    """
+    - Only generates schedule for TODAY.
+    - Uses process order from first job.
+    - Skips processes with completed=True.
+    - Skips processes with defer_until > today.
+    - Tasks that don't fit in today's working window are left for tomorrow.
+    - Returns (df_display, row_meta) where row_meta[i] = {job_id, proc_index} or None (for breaks).
+    """
+    today = date.today()
+    today_str = today.isoformat()
+
+    jobs_all = [j for j in fs_get("jobs") if j.get("user_email") == email]
+    if not jobs_all:
+        return pd.DataFrame(), []
 
     # sort jobs by due date so earlier jobs get earlier slots
     def parse_due(j):
@@ -350,25 +294,34 @@ def generate_schedule(email, settings):
         except Exception:
             return datetime.max
 
-    jobs_sorted = sorted(jobs, key=parse_due)
+    jobs_sorted = sorted(jobs_all, key=parse_due)
+    job_due_map = {j["id"]: j.get("due_date", "") for j in jobs_sorted}
 
-    job_due_map = {j["job_name"]: j.get("due_date", "") for j in jobs_sorted}
-
-    # collect tasks (only incomplete processes)
+    # collect tasks: only incomplete + not deferred beyond today
     tasks = []
     for j in jobs_sorted:
         try:
             procs = json.loads(j.get("processes", "[]"))
         except Exception:
             procs = []
-        for p in procs:
+        for idx, p in enumerate(procs):
             hours = safe_float(p.get("hours", 0))
             if hours <= 0:
                 continue
 
             completed = bool(p.get("completed", False))
             if completed:
-                continue  # already done, don't schedule
+                continue
+
+            defer_until = p.get("defer_until", "")
+            if defer_until:
+                try:
+                    ddt = datetime.fromisoformat(defer_until).date()
+                    if ddt > today:
+                        # scheduled for future, skip today
+                        continue
+                except Exception:
+                    pass
 
             raw_staff = p.get("staff", [])
             if isinstance(raw_staff, str):
@@ -380,15 +333,17 @@ def generate_schedule(email, settings):
 
             tasks.append(
                 {
+                    "job_id": j["id"],
                     "job_name": j["job_name"],
                     "process": p.get("name", "").strip(),
                     "hours": hours,
                     "staff": staff_list,
+                    "proc_index": idx,
                 }
             )
 
     if not tasks:
-        return pd.DataFrame()
+        return pd.DataFrame(), []
 
     # global process order from first job, then others
     process_order = []
@@ -406,42 +361,142 @@ def generate_schedule(email, settings):
         if t["process"] and t["process"] not in process_order:
             process_order.append(t["process"])
 
-    job_order_index = {j["job_name"]: idx for idx, j in enumerate(jobs_sorted)}
+    # sort tasks by job order inside each process
+    job_order_index = {j["id"]: idx for idx, j in enumerate(jobs_sorted)}
     tasks_sorted = sorted(
-        tasks, key=lambda t: job_order_index.get(t["job_name"], 9999)
+        tasks, key=lambda t: job_order_index.get(t["job_id"], 9999)
     )
 
+    # group tasks by process
     process_to_tasks = {p: [] for p in process_order}
     for t in tasks_sorted:
         process_to_tasks.setdefault(t["process"], []).append(t)
 
-    # schedule starting from TODAY, with real calendar dates
-    current_dt = datetime.combine(date.today(), settings["work_start"])
+    # Build working segments for today (excluding breaks)
+    work_start_t = settings["work_start"]
+    work_end_t = settings["work_end"]
+    ws = datetime.combine(today, work_start_t)
+    we = datetime.combine(today, work_end_t)
 
+    # Breaks as datetime intervals today
+    breaks = settings["breaks"]
+    break_intervals = []
+    for (b1, b2) in breaks:
+        bs = datetime.combine(today, b1)
+        be = datetime.combine(today, b2)
+        if be > bs:
+            break_intervals.append((bs, be))
+    break_intervals.sort(key=lambda x: x[0])
+
+    # Build available segments (no breaks)
+    segments = []
+    prev = ws
+    for bs, be in break_intervals:
+        if bs > prev:
+            segments.append((prev, bs))
+        prev = max(prev, be)
+    if prev < we:
+        segments.append((prev, we))
+
+    # schedule tasks into today's segments only
     schedule_rows = []
+    row_meta = []
+
+    seg_idx = 0
+    current_time = segments[0][0] if segments else ws
+
+    def hours_between(a, b):
+        return (b - a).total_seconds() / 3600.0
+
+    outer_break = False
     for proc in process_order:
         for t in process_to_tasks.get(proc, []):
-            if t["hours"] <= 0:
-                continue
-            start_dt, end_dt = next_valid_interval(current_dt, t["hours"], settings)
+            if outer_break or not segments:
+                break
 
-            process_label = t["process"]
-            if t["staff"]:
-                process_label = f"{process_label} (Staff: {', '.join(t['staff'])})"
+            needed = t["hours"]
+            placed = False
 
-            schedule_rows.append(
-                {
-                    "Date": start_dt.date().isoformat(),
-                    "Job": t["job_name"],
-                    "Process": process_label,
-                    "Start": start_dt.strftime("%I:%M %p"),
-                    "End": end_dt.strftime("%I:%M %p"),
-                    "Due Date": job_due_map.get(t["job_name"], ""),
-                }
-            )
-            current_dt = end_dt
+            while seg_idx < len(segments):
+                seg_start, seg_end = segments[seg_idx]
+                if current_time < seg_start:
+                    current_time = seg_start
 
-    return pd.DataFrame(schedule_rows)
+                available = hours_between(current_time, seg_end)
+                if available >= needed:
+                    # fits in this segment
+                    start_dt = current_time
+                    end_dt = start_dt + timedelta(hours=needed)
+
+                    label = t["process"]
+                    if t["staff"]:
+                        label = f"{label} (Staff: {', '.join(t['staff'])})"
+
+                    schedule_rows.append(
+                        {
+                            "Date": today_str,
+                            "Job": t["job_name"],
+                            "Process": label,
+                            "Start": start_dt.strftime("%I:%M %p"),
+                            "End": end_dt.strftime("%I:%M %p"),
+                            "Due Date": job_due_map.get(t["job_id"], ""),
+                        }
+                    )
+                    row_meta.append(
+                        {"job_id": t["job_id"], "proc_index": t["proc_index"]}
+                    )
+
+                    current_time = end_dt
+                    placed = True
+                    break
+                else:
+                    # move to next segment
+                    seg_idx += 1
+                    if seg_idx < len(segments):
+                        current_time = segments[seg_idx][0]
+
+            if not placed:
+                # no more space today
+                outer_break = True
+                break
+        if outer_break:
+            break
+
+    # Add break rows into schedule (for display)
+    for bs, be in break_intervals:
+        schedule_rows.append(
+            {
+                "Date": today_str,
+                "Job": "",
+                "Process": "Break",
+                "Start": bs.strftime("%I:%M %p"),
+                "End": be.strftime("%I:%M %p"),
+                "Due Date": "",
+            }
+        )
+        row_meta.append(None)
+
+    if not schedule_rows:
+        return pd.DataFrame(), []
+
+    # Sort schedule rows by time
+    def parse_time_str(t):
+        return datetime.strptime(t, "%I:%M %p")
+
+    sorted_pairs = sorted(
+        zip(schedule_rows, row_meta),
+        key=lambda x: parse_time_str(x[0]["Start"]),
+    )
+    schedule_rows, row_meta = zip(*sorted_pairs)
+    schedule_rows = list(schedule_rows)
+    row_meta = list(row_meta)
+
+    # Build DataFrame for display with Done / CantDoToday columns
+    df = pd.DataFrame(schedule_rows)
+    df["Done"] = False
+    df["CantDoToday"] = False
+
+    return df, row_meta
 
 
 # =========================================
@@ -625,7 +680,8 @@ elif page == "AddJob":
                         "name": pname,
                         "hours": phours,
                         "staff": selected_staff,   # list of names
-                        "completed": False,        # NEW: default not done
+                        "completed": False,
+                        "defer_until": "",
                     }
                 )
             else:
@@ -790,7 +846,7 @@ elif page == "AddStock":
         st.info("No stock yet")
 
 # =========================================
-# VIEW JOBS (includes process completion toggles)
+# VIEW JOBS (no completion here)
 # =========================================
 elif page == "ViewJobs":
     st.title("📋 Jobs")
@@ -841,34 +897,6 @@ elif page == "ViewJobs":
             process_list = []
 
         if process_list:
-            # show completion checkboxes
-            updated_flags = []
-            for i, p in enumerate(process_list):
-                name = p.get("name", "")
-                hours = p.get("hours", 0)
-                staff = p.get("staff", [])
-                if isinstance(staff, list):
-                    staff_str = ", ".join(staff)
-                else:
-                    staff_str = str(staff)
-                completed = bool(p.get("completed", False))
-
-                label = f"{name} — {hours}h — Staff: {staff_str}"
-                chk = st.checkbox(
-                    label,
-                    value=completed,
-                    key=f"proc_done_{job['id']}_{i}",
-                )
-                updated_flags.append(chk)
-
-            if st.button("Save Process Completion"):
-                for i, flag in enumerate(updated_flags):
-                    process_list[i]["completed"] = flag
-                fs_update("jobs", sel, {"processes": json.dumps(process_list)})
-                st.success("Process completion updated")
-                st.rerun()
-
-            # display table too
             df_proc = pd.DataFrame(process_list)
             st.table(df_proc)
         else:
@@ -889,7 +917,7 @@ elif page == "AI":
         st.write(ans)
 
 # =========================================
-# AI PRODUCTION PLAN
+# AI PRODUCTION PLAN (today only, with Done / Can't Do Today)
 # =========================================
 elif page == "AIPlan":
     st.title("📅 AI Production Plan")
@@ -930,11 +958,13 @@ elif page == "AIPlan":
     if st.button("Add Break"):
         if nb2 > nb1:
             breaks.append((nb1, nb2))
+            # update settings and rerun
+            ss["schedule_settings"]["breaks"] = breaks
             st.rerun()
         else:
             st.warning("Invalid break")
 
-    # Save setting updates
+    # Save setting updates (hours + breaks)
     ss["schedule_settings"] = {
         "work_start": ws,
         "work_end": we,
@@ -942,41 +972,103 @@ elif page == "AIPlan":
     }
 
     st.markdown("---")
-    st.subheader("Generate Plan")
+    st.subheader("Generate Today's Plan")
 
-    if st.button("Generate Production Plan"):
-        df_plan = generate_schedule(email, ss["schedule_settings"])
+    if st.button("Generate Today's Production Plan"):
+        df_plan, meta = generate_schedule(email, ss["schedule_settings"])
         if df_plan.empty:
-            st.info("No jobs or incomplete processes to schedule.")
+            st.info("No jobs or processes to schedule today.")
         else:
             ss["last_plan_df"] = df_plan
+            ss["plan_row_meta"] = meta
 
-            # -------- AI review of the deterministic plan --------
+            # AI review of plan
             csv_plan = df_plan.to_csv(index=False)
             review_prompt = f"""
-I have generated this factory production schedule (CSV):
+I have generated this factory production schedule (CSV) for TODAY:
 
 {csv_plan}
 
 Instructions:
 - Do NOT change the schedule.
 - Only review it.
-- Tell me if grouping by process type across jobs looks efficient.
-- Point out if any job with an earlier due date seems too late in the plan.
-- Suggest improvements in simple bullet points a human planner can apply.
+- Tell me if process grouping looks efficient.
+- Point out if any job with an earlier due date seems too close to the deadline.
+- Suggest improvements in simple bullet points.
 """
             ss["last_plan_review"] = ask_ai(email, review_prompt)
-
-            st.success("Plan generated and reviewed by AI!")
+            st.success("Today's plan generated and reviewed by AI!")
 
     st.markdown("---")
-    st.subheader("Current AI Plan")
+    st.subheader("Today's Plan")
 
     if isinstance(ss.get("last_plan_df"), pd.DataFrame) and not ss["last_plan_df"].empty:
-        st.dataframe(ss["last_plan_df"], use_container_width=True)
+        # Editable table with Done / CantDoToday in columns
+        edited_df = st.data_editor(
+            ss["last_plan_df"],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Done": st.column_config.CheckboxColumn("Done"),
+                "CantDoToday": st.column_config.CheckboxColumn("Can't Do Today"),
+            },
+        )
 
+        if st.button("Save Status Updates"):
+            ss["last_plan_df"] = edited_df
+            meta = ss.get("plan_row_meta", [])
+
+            # Load jobs for this user into a map
+            jobs_all = [j for j in fs_get("jobs") if j.get("user_email") == email]
+            job_map = {j["id"]: j for j in jobs_all}
+            updated_jobs = {}
+
+            for i, row in edited_df.iterrows():
+                if i >= len(meta):
+                    continue
+                m = meta[i]
+                if not m:
+                    # break rows (no job/process to update)
+                    continue
+
+                job_id = m["job_id"]
+                proc_index = m["proc_index"]
+
+                done = bool(row.get("Done", False))
+                cant = bool(row.get("CantDoToday", False))
+
+                if not (done or cant):
+                    continue  # nothing to change
+
+                job = job_map.get(job_id)
+                if not job:
+                    continue
+
+                try:
+                    procs = json.loads(job.get("processes", "[]"))
+                except Exception:
+                    procs = []
+
+                if proc_index < 0 or proc_index >= len(procs):
+                    continue
+
+                if done:
+                    procs[proc_index]["completed"] = True
+                    procs[proc_index]["defer_until"] = ""
+                elif cant:
+                    procs[proc_index]["completed"] = False
+                    procs[proc_index]["defer_until"] = (date.today() + timedelta(days=1)).isoformat()
+
+                updated_jobs[job_id] = procs
+
+            for jid, procs in updated_jobs.items():
+                fs_update("jobs", jid, {"processes": json.dumps(procs)})
+
+            st.success("Process statuses updated. Regenerate plan tomorrow to see rescheduled tasks.")
+
+        # Show AI review if available
         if ss.get("last_plan_review"):
             st.markdown("### AI Review")
             st.write(ss["last_plan_review"])
     else:
-        st.info("No plan yet. Click 'Generate Production Plan'.")
+        st.info("No plan yet. Click 'Generate Today's Production Plan'.")
