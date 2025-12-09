@@ -224,7 +224,7 @@ def stock_summary(email):
         return "No stock available."
     out = []
     for s in stocks:
-        for z in s["sizes_list"] in s["sizes_list"]:
+        for z in s["sizes_list"]:
             out.append(f"- {s['name']} size {z['size']} qty {z['qty']}")
     return "\n".join(out)
 
@@ -422,7 +422,7 @@ Remember:
 - Apply the PASTING RULE strictly.
 - Only use these dates in the 'Date' column: {today.isoformat()} or {tomorrow.isoformat()}.
 - Return ONLY CSV with the exact header:
-Date,Job,Process,Staff,Outsiders,Start,End, Due Date,JobID,ProcessIndex
+Date,Job,Process,Staff,Outsiders,Start,End,Due Date,JobID,ProcessIndex
 """
 
     try:
