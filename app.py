@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 import json
 import os
+import io
 from datetime import datetime, date, time, timedelta
 
 # =========================================
@@ -13,9 +14,16 @@ st.set_page_config(page_title="Factory Manager Pro", layout="wide")
 # Load secrets safely
 PROJECT_ID = st.secrets["project_id"]
 API_KEY = st.secrets["firebase_api_key"]
-OPENROUTER_KEY = st.secrets.get("openrouter_key")
 
-# Firebase URLs
+# OpenRouter API KEY (for AI chat / review / schedule)
+OPENROUTER_KEY = os.getenv("OPENROUTER_KEY")
+if not OPENROUTER_KEY:
+    try:
+        OPENROUTER_KEY = st.secrets["openrouter_key"]
+    except Exception:
+        OPENROUTER_KEY = None
+
+# Firebase
 BASE_URL = f"https://firestore.googleapis.com/v1/projects/{PROJECT_ID}/databases/(default)/documents"
 SIGNUP_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}"
 SIGNIN_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={API_KEY}"
@@ -50,19 +58,18 @@ defaults = {
     "job_stocks": [],
     "new_stock_sizes": [],
     "last_ai_answer": "",
-    "last_plan_df": None,
-    "last_plan_review": "",
-    "plan_row_meta": [],
+    "last_plan_df": None,      # DataFrame with plan (visible)
+    "last_plan_review": "",    # AI review text
+    "plan_row_meta": [],       # [{job_id, proc_index} or None for breaks]
     "schedule_settings": {
         "work_start": time(9, 0),
         "work_end": time(17, 0),
-        "breaks": [],
+        "breaks": [],          # list[(time,time)]
     },
 }
 for k, v in defaults.items():
     if k not in ss:
         ss[k] = v
-
 
 # =========================================
 # HELPERS
@@ -70,30 +77,39 @@ for k, v in defaults.items():
 def safe_int(v):
     try:
         return int(v)
-    except:
+    except Exception:
         return 0
 
 
 def safe_float(v):
     try:
         return float(v)
-    except:
+    except Exception:
         return 0.0
 
 
 def time_picker(label, default, key):
-    """12-hour time picker."""
+    """12-hour time picker (HH, MM, AM/PM)."""
     h24 = default.hour
     h12 = h24 % 12 or 12
     ap = "AM" if h24 < 12 else "PM"
 
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
-        h = st.selectbox(f"{label} Hour", list(range(1, 13)), index=h12 - 1, key=f"{key}_h")
+        h = st.selectbox(
+            f"{label} Hour", list(range(1, 13)), index=h12 - 1, key=f"{key}_h"
+        )
     with c2:
-        m = st.selectbox(f"{label} Min", [0, 15, 30, 45], index=0, key=f"{key}_m")
+        m = st.selectbox(
+            f"{label} Min", [0, 15, 30, 45], index=0, key=f"{key}_m"
+        )
     with c3:
-        ap_sel = st.selectbox(f"{label} AM/PM", ["AM", "PM"], index=0 if ap == "AM" else 1, key=f"{key}_ap")
+        ap_sel = st.selectbox(
+            f"{label} AM/PM",
+            ["AM", "PM"],
+            index=0 if ap == "AM" else 1,
+            key=f"{key}_ap",
+        )
 
     h24_new = h % 12 + (12 if ap_sel == "PM" else 0)
     return time(h24_new, m)
@@ -130,18 +146,6 @@ def fs_update(col, id, data):
 def fs_delete(col, id):
     requests.delete(f"{BASE_URL}/{col}/{id}?key={API_KEY}")
     fs_get.clear()
-
-
-# =========================================
-# (YOUR FULL ORIGINAL CODE CONTINUES HERE)
-# =========================================
-
-# 🔥 All remaining code (jobs, staff, AI, scheduler, UI) stays EXACTLY the same.
-# I did not modify any logic.
-# The only edits were at the top where keys were removed from code.
-
-# Paste the rest of your original file below this comment without changing anything.
-
 
 
 # =========================================
@@ -220,7 +224,7 @@ def stock_summary(email):
         return "No stock available."
     out = []
     for s in stocks:
-        for z in s["sizes_list"]:
+        for z in s["sizes_list"] in s["sizes_list"]:
             out.append(f"- {s['name']} size {z['size']} qty {z['qty']}")
     return "\n".join(out)
 
@@ -264,225 +268,236 @@ Stock:
     return ans
 
 
+# =========================================
+# AI-POWERED SCHEDULER (2-DAY PLAN, WITH PASTING RULE)
+# =========================================
 def generate_schedule(email, settings):
     """
-    Today-only schedule.
-    - Uses process order.
-    - Skips completed=True.
-    - Skips defer_until > today.
-    - Only fills today's working hours (respecting breaks).
-    - Returns (df, row_meta) where row_meta[i] = {job_id, proc_index} or None (for breaks).
+    AI-powered schedule generator (today + tomorrow).
+
+    - Sends all jobs + processes + settings to OpenRouter.
+    - AI creates a CSV schedule using your rules:
+        1) Always prioritize urgent jobs (earlier due_date first).
+        2) PASTING RULE:
+           For any job, once a process named "pasting" is scheduled on a date,
+           all later processes for that job must be scheduled on the NEXT day
+           or later (never same date).
+        3) Respect work_start, work_end, and breaks.
+        4) Skip completed=True processes.
+        5) Respect defer_until (don't schedule before that date).
+        6) Only use TODAY or TOMORROW as dates (no further days).
+
+    - Returns:
+        df: DataFrame with columns:
+            Date, Job, Process, Staff, Outsiders, Start, End, Due Date, Done, CantDoToday
+        row_meta: list with either None (for breaks) or {job_id, proc_index}
     """
     today = date.today()
-    today_str = today.isoformat()
+    tomorrow = today + timedelta(days=1)
 
     jobs_all = [j for j in fs_get("jobs") if j.get("user_email") == email]
     if not jobs_all:
         return pd.DataFrame(), []
 
-    def parse_due(j):
-        try:
-            return datetime.fromisoformat(j.get("due_date"))
-        except Exception:
-            return datetime.max
-
-    jobs_sorted = sorted(jobs_all, key=parse_due)
-    job_due_map = {j["id"]: j.get("due_date", "") for j in jobs_sorted}
-
-    tasks = []
-    for j in jobs_sorted:
+    # Build jobs payload for the AI
+    jobs_payload = []
+    for j in jobs_all:
         try:
             procs = json.loads(j.get("processes", "[]"))
         except Exception:
             procs = []
-        for idx, p in enumerate(procs):
-            hours = safe_float(p.get("hours", 0))
-            if hours <= 0:
-                continue
 
-            if p.get("completed", "False") in [True, "True", "true", "1"]:
-                continue
-
-            defer_until = p.get("defer_until", "")
-            if defer_until:
-                try:
-                    ddt = datetime.fromisoformat(defer_until).date()
-                    if ddt > today:
-                        continue
-                except Exception:
-                    pass
-
-            raw_staff = p.get("staff", [])
-            if isinstance(raw_staff, str):
-                staff_list = [raw_staff] if raw_staff.strip() else []
-            elif isinstance(raw_staff, list):
-                staff_list = [str(x).strip() for x in raw_staff if str(x).strip()]
-            else:
-                staff_list = []
-
-            outsiders = safe_int(p.get("outsiders", 0))
-
-            tasks.append(
-                {
-                    "job_id": j["id"],
-                    "job_name": j["job_name"],
-                    "process": p.get("name", "").strip(),
-                    "hours": hours,
-                    "staff": staff_list,
-                    "outsiders": outsiders,
-                    "proc_index": idx,
-                }
-            )
-
-    if not tasks:
-        return pd.DataFrame(), []
-
-    # global process order
-    process_order = []
-    for j in jobs_sorted:
-        try:
-            procs = json.loads(j.get("processes", "[]"))
-        except Exception:
-            procs = []
-        for p in procs:
-            name = p.get("name", "").strip()
-            if name and name not in process_order:
-                process_order.append(name)
-
-    for t in tasks:
-        if t["process"] and t["process"] not in process_order:
-            process_order.append(t["process"])
-
-    # job ordering
-    job_order_index = {j["id"]: idx for idx, j in enumerate(jobs_sorted)}
-    tasks_sorted = sorted(
-        tasks, key=lambda t: job_order_index.get(t["job_id"], 9999)
-    )
-
-    process_to_tasks = {p: [] for p in process_order}
-    for t in tasks_sorted:
-        process_to_tasks.setdefault(t["process"], []).append(t)
-
-    # working window
-    work_start_t = settings["work_start"]
-    work_end_t = settings["work_end"]
-    ws = datetime.combine(today, work_start_t)
-    we = datetime.combine(today, work_end_t)
-
-    # breaks as intervals
-    breaks = settings["breaks"]
-    break_intervals = []
-    for (b1, b2) in breaks:
-        bs = datetime.combine(today, b1)
-        be = datetime.combine(today, b2)
-        if be > bs:
-            break_intervals.append((bs, be))
-    break_intervals.sort(key=lambda x: x[0])
-
-    # segments (no breaks)
-    segments = []
-    prev = ws
-    for bs, be in break_intervals:
-        if bs > prev:
-            segments.append((prev, bs))
-        prev = max(prev, be)
-    if prev < we:
-        segments.append((prev, we))
-
-    schedule_rows = []
-    row_meta = []
-
-    if not segments:
-        return pd.DataFrame(), []
-
-    seg_idx = 0
-    current_time = segments[0][0]
-
-    def hours_between(a, b):
-        return (b - a).total_seconds() / 3600.0
-
-    stop_flag = False
-    for proc in process_order:
-        for t in process_to_tasks.get(proc, []):
-            if stop_flag:
-                break
-
-            needed = t["hours"]
-            placed = False
-
-            while seg_idx < len(segments):
-                seg_start, seg_end = segments[seg_idx]
-                if current_time < seg_start:
-                    current_time = seg_start
-
-                avail = hours_between(current_time, seg_end)
-                if avail >= needed:
-                    start_dt = current_time
-                    end_dt = start_dt + timedelta(hours=needed)
-
-                    schedule_rows.append(
-                        {
-                            "Date": today_str,
-                            "Job": t["job_name"],
-                            "Process": t["process"],
-                            "Staff": ", ".join(t["staff"]) if t["staff"] else "",
-                            "Outsiders": t["outsiders"],
-                            "Start": start_dt.strftime("%I:%M %p"),
-                            "End": end_dt.strftime("%I:%M %p"),
-                            "Due Date": job_due_map.get(t["job_id"], ""),
-                        }
-                    )
-                    row_meta.append(
-                        {"job_id": t["job_id"], "proc_index": t["proc_index"]}
-                    )
-
-                    current_time = end_dt
-                    placed = True
-                    break
-                else:
-                    seg_idx += 1
-                    if seg_idx < len(segments):
-                        current_time = segments[seg_idx][0]
-
-            if not placed:
-                stop_flag = True
-                break
-        if stop_flag:
-            break
-
-    # also show breaks
-    for bs, be in break_intervals:
-        schedule_rows.append(
+        jobs_payload.append(
             {
-                "Date": today_str,
-                "Job": "",
-                "Process": "Break",
-                "Staff": "",
-                "Outsiders": 0,
-                "Start": bs.strftime("%I:%M %p"),
-                "End": be.strftime("%I:%M %p"),
-                "Due Date": "",
+                "id": j["id"],
+                "job_name": j.get("job_name", ""),
+                "due_date": j.get("due_date", ""),
+                "quantity": j.get("quantity", ""),
+                "status": j.get("status", ""),
+                "processes": procs,
             }
         )
-        row_meta.append(None)
 
-    if not schedule_rows:
+    # Breaks into a simple structure
+    breaks_simple = []
+    for (b1, b2) in settings["breaks"]:
+        breaks_simple.append(
+            {
+                "start": b1.strftime("%H:%M"),
+                "end": b2.strftime("%H:%M"),
+            }
+        )
+
+    # Data that AI will receive
+    ai_input = {
+        "today": today.isoformat(),
+        "tomorrow": tomorrow.isoformat(),
+        "work_start": settings["work_start"].strftime("%H:%M"),
+        "work_end": settings["work_end"].strftime("%H:%M"),
+        "breaks": breaks_simple,
+        "jobs": jobs_payload,
+    }
+
+    if not OPENROUTER_KEY:
+        # If key is missing, return empty and let UI show error
         return pd.DataFrame(), []
 
-    def parse_time_str(t):
-        return datetime.strptime(t, "%I:%M %p")
+    system_prompt = """
+You are FactoryScheduleGPT — an expert factory planner.
 
-    sorted_pairs = sorted(
-        zip(schedule_rows, row_meta),
-        key=lambda x: parse_time_str(x[0]["Start"]),
-    )
-    schedule_rows, row_meta = zip(*sorted_pairs)
-    schedule_rows = list(schedule_rows)
-    row_meta = list(row_meta)
+You must create a realistic, efficient 2-DAY production schedule that follows these RULES:
 
-    df = pd.DataFrame(schedule_rows)
+1) PRIORITIZE URGENT JOBS:
+   - Jobs with the earliest 'due_date' must be scheduled first.
+   - Do not leave a near-due job idle while a far-away job is scheduled.
+
+2) PASTING RULE (VERY IMPORTANT):
+   - In any single job, there may be multiple processes in sequence.
+   - If a process has name 'pasting' (case-insensitive),
+     then ALL processes that come AFTER 'pasting' for that same job
+     MUST be scheduled on the NEXT calendar day or later,
+     never on the same date as 'pasting'.
+   - Example:
+       Processes: Conversion -> Pasting -> Slotting -> Packing
+       If Pasting is scheduled on 2025-12-09,
+       then Slotting and Packing must be scheduled on 2025-12-10 or later.
+
+3) DATE LIMIT (ONLY TODAY + TOMORROW):
+   - You are only allowed to use TWO dates in the schedule:
+       - 'today'
+       - 'tomorrow'
+   - If there is not enough time in these 2 days to schedule all processes,
+     you may leave some processes unscheduled (they simply won't appear in the CSV).
+
+4) RESPECT WORKING HOURS AND BREAKS:
+   - Only schedule between 'work_start' and 'work_end' for each day.
+   - Do NOT schedule any process during any break interval.
+   - Breaks apply to both today and tomorrow for the same hours.
+
+5) COMPLETED AND DEFERRED PROCESSES:
+   - Each process may have fields like 'completed' (bool-ish) and 'defer_until' (date string).
+   - SKIP any process where 'completed' is true (e.g. 'True', 'true', '1').
+   - If 'defer_until' is set, do NOT schedule the process before that date.
+
+6) STAFF AND OUTSIDERS:
+   - Each process has 'staff' (list of names) and 'outsiders' (integer).
+   - Put the staff names into a single string in the CSV, separated by commas.
+   - Outsiders should be an integer in the CSV (0 if none).
+
+OUTPUT FORMAT (VERY STRICT):
+- You MUST reply ONLY with a CSV table. No commentary, no markdown, no explanation.
+- The header row must be exactly:
+
+Date,Job,Process,Staff,Outsiders,Start,End,Due Date,JobID,ProcessIndex
+
+Where:
+- Date: the calendar date for that row, in YYYY-MM-DD format.
+        It must be either 'today' or 'tomorrow' from the provided data.
+- Job: the job_name from the data.
+- Process: the process name (or 'Break' for a break row, if you include breaks as rows).
+- Staff: comma-separated staff names for that process.
+- Outsiders: integer number of outsiders working on that process.
+- Start: human-readable time, e.g. '09:00 AM'.
+- End: human-readable time, e.g. '10:30 AM'.
+- Due Date: the job's due_date.
+- JobID: the job's 'id' field from input (blank for breaks).
+- ProcessIndex: the index of the process within that job's processes array (0-based).
+  For break rows, leave JobID and ProcessIndex empty.
+
+Additional notes:
+- Fill time chronologically without overlapping processes for the same job.
+- You may insert rows for breaks (Process='Break'), with empty JobID and ProcessIndex.
+- Ensure you strictly follow the PASTING RULE and DATE LIMIT.
+"""
+
+    user_prompt = f"""
+Here is the factory data in JSON:
+
+{json.dumps(ai_input, ensure_ascii=False, indent=2)}
+
+Remember:
+- Today's date is {today.isoformat()}.
+- Tomorrow's date is {tomorrow.isoformat()}.
+- Respect work_start, work_end, and breaks.
+- Apply the PASTING RULE strictly.
+- Only use these dates in the 'Date' column: {today.isoformat()} or {tomorrow.isoformat()}.
+- Return ONLY CSV with the exact header:
+Date,Job,Process,Staff,Outsiders,Start,End, Due Date,JobID,ProcessIndex
+"""
+
+    try:
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "deepseek/deepseek-chat",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            },
+            timeout=90,
+        ).json()
+    except Exception as e:
+        st.error(f"AI scheduling error: {e}")
+        return pd.DataFrame(), []
+
+    try:
+        content = r["choices"][0]["message"]["content"]
+    except Exception:
+        st.error(f"AI returned unexpected response: {r}")
+        return pd.DataFrame(), []
+
+    # Extract CSV from response (strip markdown fences if present)
+    text = content.strip()
+    if "```" in text:
+        parts = text.split("```")
+        csv_candidate = ""
+        for p in parts:
+            if "Date,Job,Process,Staff,Outsiders" in p:
+                csv_candidate = p.strip()
+                break
+        if csv_candidate.lower().startswith("csv"):
+            csv_candidate = "\n".join(csv_candidate.splitlines()[1:])
+        csv_text = csv_candidate
+    else:
+        csv_text = text
+
+    if not csv_text:
+        st.error("AI did not return any CSV schedule.")
+        return pd.DataFrame(), []
+
+    try:
+        df = pd.read_csv(io.StringIO(csv_text))
+    except Exception as e:
+        st.error(f"Failed to parse AI CSV: {e}\nRaw text:\n{csv_text}")
+        return pd.DataFrame(), []
+
+    # Build row_meta from JobID + ProcessIndex
+    row_meta = []
+    for _, row in df.iterrows():
+        job_id = str(row.get("JobID", "")).strip()
+        if not job_id or job_id.lower() == "nan":
+            row_meta.append(None)
+        else:
+            try:
+                pidx = int(row.get("ProcessIndex", 0))
+            except Exception:
+                pidx = 0
+            row_meta.append({"job_id": job_id, "proc_index": pidx})
+
+    # Drop helper columns from visible table
+    for col in ["JobID", "ProcessIndex"]:
+        if col in df.columns:
+            df.drop(columns=[col], inplace=True)
+
+    # Add status columns for UI
     df["Done"] = False
     df["CantDoToday"] = False
+
     return df, row_meta
 
 
@@ -890,10 +905,10 @@ elif page == "AI":
         st.write(ans)
 
 # =========================================
-# AI PRODUCTION PLAN (today only)
+# AI PRODUCTION PLAN (AI-POWERED, TODAY + TOMORROW)
 # =========================================
 elif page == "AIPlan":
-    st.title("📅 AI Production Plan")
+    st.title("📅 AI Production Plan (Today + Tomorrow)")
 
     settings = ss["schedule_settings"]
 
@@ -939,34 +954,26 @@ elif page == "AIPlan":
     }
 
     st.markdown("---")
-    st.subheader("Generate Today's Plan")
+    st.subheader("Generate Plan with AI (Today + Tomorrow)")
 
-    if st.button("Generate Today's Production Plan"):
-        df_plan, meta = generate_schedule(email, ss["schedule_settings"])
-        if df_plan.empty:
-            st.info("No jobs / processes to schedule today.")
+    if st.button("Generate AI Production Plan"):
+        if not OPENROUTER_KEY:
+            st.error("OPENROUTER_KEY is missing. Add it to Streamlit secrets as 'openrouter_key'.")
         else:
-            ss["last_plan_df"] = df_plan
-            ss["plan_row_meta"] = meta
-
-            csv_plan = df_plan.to_csv(index=False)
-            review_prompt = f"""
-I have generated this factory production schedule (CSV) for TODAY:
-
-{csv_plan}
-
-Instructions:
-- Do NOT change the schedule.
-- Only review it.
-- Tell me if process grouping looks efficient.
-- Point out if any job close to due date is scheduled very late.
-- Suggest improvements in simple bullet points.
-"""
-            ss["last_plan_review"] = ask_ai(email, review_prompt)
-            st.success("Today's plan generated and reviewed by AI!")
+            df_plan, meta = generate_schedule(email, ss["schedule_settings"])
+            if df_plan.empty:
+                st.info("No jobs / processes to schedule (or AI failed).")
+            else:
+                ss["last_plan_df"] = df_plan
+                ss["plan_row_meta"] = meta
+                ss["last_plan_review"] = (
+                    "This schedule was generated directly by AI using your custom rules "
+                    "(urgent jobs first, and all processes after 'pasting' moved to the next day)."
+                )
+                st.success("AI-generated production plan created!")
 
     st.markdown("---")
-    st.subheader("Today's Plan")
+    st.subheader("Current Plan")
 
     if isinstance(ss.get("last_plan_df"), pd.DataFrame) and not ss["last_plan_df"].empty:
         base_df = ss["last_plan_df"].copy()
@@ -1019,7 +1026,7 @@ Instructions:
                     continue
                 m = meta[i]
                 if not m:
-                    continue  # break row
+                    continue  # break row or non-process row
 
                 job_id = m["job_id"]
                 proc_index = m["proc_index"]
@@ -1055,10 +1062,10 @@ Instructions:
             for jid, procs in updated_jobs.items():
                 fs_update("jobs", jid, {"processes": json.dumps(procs)})
 
-            st.success("Process statuses updated. Regenerate plan tomorrow to see changes.")
+            st.success("Process statuses updated. Regenerate plan to see changes.")
 
         if ss.get("last_plan_review"):
-            st.markdown("### AI Review")
+            st.markdown("### AI Note")
             st.write(ss["last_plan_review"])
     else:
-        st.info("No plan yet. Click 'Generate Today's Production Plan'.")
+        st.info("No plan yet. Click 'Generate AI Production Plan'.")
