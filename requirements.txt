@@ -1,6 +1,1 @@
-streamlit
-requests
-pandas
-audio-recorder-streamlit
-gTTS
-openai
+
